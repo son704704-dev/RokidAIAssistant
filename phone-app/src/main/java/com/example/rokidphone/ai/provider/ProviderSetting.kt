@@ -39,7 +39,7 @@ sealed class ProviderSetting {
         override val displayName: String = "Google Gemini",
         override val enabled: Boolean = true,
         val apiKey: String = "",
-        val modelId: String = "gemini-3.1-flash",
+        val modelId: String = "gemini-3.6-flash",
         val baseUrl: String = "https://generativelanguage.googleapis.com/v1beta/"
     ) : ProviderSetting() {
         @Transient
@@ -58,7 +58,7 @@ sealed class ProviderSetting {
         override val displayName: String = "OpenAI",
         override val enabled: Boolean = true,
         val apiKey: String = "",
-        val modelId: String = "gpt-5.4",
+        val modelId: String = "gpt-5.6-sol",
         val baseUrl: String = "https://api.openai.com/v1/",
         val organizationId: String = ""
     ) : ProviderSetting() {
@@ -78,7 +78,7 @@ sealed class ProviderSetting {
         override val displayName: String = "Anthropic Claude",
         override val enabled: Boolean = true,
         val apiKey: String = "",
-        val modelId: String = "claude-opus-4-7",
+        val modelId: String = "claude-opus-5",
         val baseUrl: String = "https://api.anthropic.com/v1/"
     ) : ProviderSetting() {
         @Transient
@@ -135,7 +135,7 @@ sealed class ProviderSetting {
         override val displayName: String = "xAI Grok",
         override val enabled: Boolean = true,
         val apiKey: String = "",
-        val modelId: String = "grok-4.20-beta-latest-reasoning",
+        val modelId: String = "grok-4.1-fast",
         val baseUrl: String = "https://api.x.ai/v1/"
     ) : ProviderSetting() {
         @Transient
@@ -154,7 +154,7 @@ sealed class ProviderSetting {
         override val displayName: String = "Alibaba Qwen",
         override val enabled: Boolean = true,
         val apiKey: String = "",
-        val modelId: String = "qwen3-max-2026-01-23",
+        val modelId: String = "qwen3.7-flash",
         val baseUrl: String = "https://dashscope.aliyuncs.com/compatible-mode/v1/"
     ) : ProviderSetting() {
         @Transient
@@ -173,6 +173,7 @@ sealed class ProviderSetting {
         override val displayName: String = "Zhipu GLM",
         override val enabled: Boolean = true,
         val apiKey: String = "",
+        // TODO: Verify the default model ID against https://open.bigmodel.cn/ before the next release
         val modelId: String = "glm-5.1",
         val baseUrl: String = "https://open.bigmodel.cn/api/paas/v4/"
     ) : ProviderSetting() {
@@ -232,7 +233,7 @@ sealed class ProviderSetting {
         override val displayName: String = "Moonshot (Kimi)",
         override val enabled: Boolean = true,
         val apiKey: String = "",
-        val modelId: String = "kimi-k2.5",
+        val modelId: String = "kimi-k3",
         val baseUrl: String = "https://api.moonshot.cn/v1/"
     ) : ProviderSetting() {
         @Transient
