@@ -43,8 +43,17 @@ cp local.properties.template local.properties
 ### Out of Scope
 
 - Standalone glasses-only operation (phone required for AI processing)
-- Offline AI inference
 - Video streaming or real-time AR overlays
+
+### On-Device Inference (experimental)
+
+- An optional **On-Device Gemma** provider runs a Gemma model locally with **no API key and no network**.
+- It is **text-only**: speech-to-text and image understanding gracefully report that they are unsupported.
+- Models are **not bundled** with the app. Place a Gemma model file (`.task` or `.gguf`) into the app-private
+  model directory (`filesDir/models/gemma`) to make it selectable; the installed model then appears in the model
+  catalog alongside the verified defaults.
+- The runtime engine binding (MediaPipe LLM Inference / llama.cpp) is pluggable: until an engine is wired, the
+  provider reports that no on-device model is loaded instead of silently falling back to the cloud.
 
 ---
 

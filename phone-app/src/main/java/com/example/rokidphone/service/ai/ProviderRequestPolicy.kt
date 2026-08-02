@@ -88,6 +88,13 @@ object ProviderRequestPolicies {
         AiProvider.MISTRAL, AiProvider.BAIDU, AiProvider.CUSTOM -> ProviderRequestPolicy(
             imageContentFormat = if (capabilities.imageInput) ImageContentFormat.OPENAI_IMAGE_URL else ImageContentFormat.NONE
         )
+        AiProvider.LOCAL_GEMMA -> ProviderRequestPolicy(
+            // On-device text model: no network params, no penalties, text-only.
+            allowPenalties = false,
+            streaming = capabilities.streaming,
+            imageContentFormat = ImageContentFormat.NONE,
+            supportsAudioTranscriptions = false
+        )
         else -> ProviderRequestPolicy(imageContentFormat = ImageContentFormat.NONE)
     }
 

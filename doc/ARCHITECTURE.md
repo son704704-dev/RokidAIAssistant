@@ -403,10 +403,27 @@ DeepSeek `reasoning_content` and Claude thinking are never shown to the user.
 | Gemini Live    | `GEMINI_LIVE`              | `GeminiLiveSession`       | WebSocket; `GeminiService` for non-live ops |
 | AnythingLLM    | `ANYTHING_LLM`             | adapter                   | Capability depends on workspace LLM     |
 | Custom         | `CUSTOM_OPENAI_COMPATIBLE` | `OpenAiCompatibleService` | Chat Completions or Responses, cleartext warning |
+| On-Device Gemma | `LOCAL_INFERENCE`         | `LocalGemmaService`       | Offline, keyless, text-only; pluggable local engine; installed models discovered via `LocalModelCatalogSource` |
 
 STT is decoupled from chat: only providers with a real transcription endpoint
 (OpenAI Whisper, Groq Whisper, Gemini native audio) can transcribe; the chat
 model catalog never implies STT support.
+
+##### On-Device Inference (`LOCAL_INFERENCE`)
+
+The On-Device Gemma provider follows the same data-driven registry pattern but
+runs entirely on the device:
+
+- `ProviderRegistry` marks it `requiresApiKey = false`, `catalogFormat = NONE`,
+  `modelsEndpointPath = null` — there is no network catalog.
+- `ModelCatalogRepository` resolves its catalog from `LocalModelCatalogSource`
+  (a scan of the app-private `filesDir/models/gemma` directory for `.task` /
+  `.gguf` files) merged with the verified fallback entries, never the network.
+- `LocalGemmaService` implements the full `AiServiceProvider` contract; text
+  chat delegates to a pluggable `LocalInferenceEngine`, while `transcribe` and
+  `analyzeImage` degrade gracefully with clear messages.
+- `PhoneAIService` skips its cloud-key fallback for keyless providers, so the
+  device provider is never silently switched to Gemini.
 
 #### STT Service Architecture
 

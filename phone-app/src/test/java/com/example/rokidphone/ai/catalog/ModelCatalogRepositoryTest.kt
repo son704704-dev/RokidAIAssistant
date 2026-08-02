@@ -162,4 +162,39 @@ class ModelCatalogRepositoryTest {
         // Unknown ID: provider default (xAI is vision-capable by default).
         assertThat(repo.capabilitiesFor(snapshot, "grok-unknown").imageInput).isTrue()
     }
+
+    // ==================== On-device (LOCAL_GEMMA) provider ====================
+
+    @Test
+    fun `local provider without source serves fallback and never hits the network`() = runTest {
+        val repo = repository(InMemoryModelCatalogCache())
+
+        val snapshot = repo.getCatalog(AiProvider.LOCAL_GEMMA, apiKey = "ignored", forceRefresh = true)
+
+        assertThat(snapshot.source).isEqualTo(CatalogSource.FALLBACK)
+        assertThat(snapshot.models.map { it.id }).contains("gemma-3n-E2B-it")
+        assertThat(mockServer.server.requestCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `local provider surfaces installed model files before fallback entries`() = runTest {
+        val dir = java.nio.file.Files.createTempDirectory("localmodels").toFile()
+        java.io.File(dir, "gemma-3n-E2B-it.task").writeBytes(ByteArray(16))
+        val local = LocalModelCatalogSource(modelDirProvider = { dir })
+        val repo = ModelCatalogRepository(
+            remote = RemoteModelCatalogSource(baseUrlOverride = mockServer.baseUrl),
+            cache = InMemoryModelCatalogCache(),
+            localSource = local
+        )
+
+        val snapshot = repo.getCatalog(AiProvider.LOCAL_GEMMA)
+
+        assertThat(snapshot.source).isEqualTo(CatalogSource.LIVE)
+        val installed = snapshot.models.first()
+        assertThat(installed.id).isEqualTo("gemma-3n-E2B-it")
+        assertThat(installed.source).isEqualTo(CatalogSource.LIVE)
+        // The other verified model is still offered (not yet installed).
+        assertThat(snapshot.models.map { it.id }).contains("gemma-3n-E4B-it")
+        assertThat(mockServer.server.requestCount).isEqualTo(0)
+    }
 }
