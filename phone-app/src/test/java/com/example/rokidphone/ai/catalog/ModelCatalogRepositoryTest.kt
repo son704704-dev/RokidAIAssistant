@@ -130,9 +130,12 @@ class ModelCatalogRepositoryTest {
         // localized warning) but the selection itself is kept.
         val snapshot = repo.getCatalog(AiProvider.MOONSHOT, apiKey = "")
         assertThat(repo.isSelectionAbsent(snapshot, manual.id)).isTrue()
+        assertThat(repo.selectionWarning(snapshot, manual.id))
+            .isEqualTo("Current selection is not in the latest catalog.")
         // Existing selections are not flagged.
         val listed = snapshot.models.first().id
         assertThat(repo.isSelectionAbsent(snapshot, listed)).isFalse()
+        assertThat(repo.selectionWarning(snapshot, listed)).isNull()
     }
 
     @Test
