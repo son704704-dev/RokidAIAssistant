@@ -144,6 +144,8 @@
     <string name="protocol_chat_completions">Chat Completions</string>
     <string name="protocol_responses">Responses</string>
     <string name="custom_models_path">Models 端點路徑</string>
+    <string name="custom_supports_vision">模型支援影像輸入(視覺)</string>
+    <string name="custom_supports_vision_subtitle">若此模型可分析圖片(例如 Gemma 4、LLaVA、MiniCPM-V)請開啟。自訂端點的拍照分析需要此設定。</string>
     <string name="secure_storage_unavailable">無法初始化加密儲存。API 金鑰將不會儲存在此裝置上。</string>
     
     <!-- API Key Validation -->

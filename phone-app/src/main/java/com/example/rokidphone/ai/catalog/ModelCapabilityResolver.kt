@@ -7,12 +7,19 @@ import com.example.rokidphone.data.AiProvider
  *
  * Priority:
  *  1. live Models API metadata (passed in by the catalog parser),
- *  2. verified fallback capability map ([FallbackModelCatalog]),
- *  3. conservative provider default — text in/out, streaming by protocol,
- *     image input only where the provider ships vision-capable chat models,
- *  4. manual overrides (Custom provider only).
+ *  2. manual overrides (user-declared; Custom provider only — the user knows
+ *     their local model better than any static list),
+ *  3. verified fallback capability map ([FallbackModelCatalog]),
+ *  4. conservative provider default — text in/out, streaming by protocol,
+ *     image input only where the provider ships vision-capable chat models.
  */
 object ModelCapabilityResolver {
+
+    /** Manual override key: model accepts image input. */
+    const val OVERRIDE_VISION = "vision"
+
+    /** Manual override key: model accepts audio input. */
+    const val OVERRIDE_AUDIO_INPUT = "audio_input"
 
     /** Providers whose mainstream chat models accept image input. */
     private val providerDefaultVision: Set<AiProvider> = setOf(
@@ -30,9 +37,23 @@ object ModelCapabilityResolver {
         manualOverrides: ModelCapabilities? = null
     ): ModelCapabilities {
         liveCapabilities?.let { return it }
-        FallbackModelCatalog.capabilityFor(provider, modelId)?.let { return it }
         manualOverrides?.let { return it }
+        FallbackModelCatalog.capabilityFor(provider, modelId)?.let { return it }
         return providerDefault(provider)
+    }
+
+    /**
+     * Build manual overrides from the user's override keys (persisted in
+     * settings). Unknown keys are ignored. Returns null when there is nothing
+     * to override so callers can keep the normal resolution path.
+     */
+    fun overridesFromKeys(provider: AiProvider, keys: Set<String>): ModelCapabilities? {
+        if (keys.isEmpty()) return null
+        val base = providerDefault(provider)
+        return base.copy(
+            imageInput = base.imageInput || OVERRIDE_VISION in keys,
+            audioInput = base.audioInput || OVERRIDE_AUDIO_INPUT in keys
+        )
     }
 
     /** Conservative default when nothing is known about the model. */

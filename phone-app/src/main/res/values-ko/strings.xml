@@ -144,6 +144,8 @@
     <string name="protocol_chat_completions">Chat Completions</string>
     <string name="protocol_responses">Responses</string>
     <string name="custom_models_path">Models 엔드포인트 경로</string>
+    <string name="custom_supports_vision">모델이 이미지 입력(비전) 지원</string>
+    <string name="custom_supports_vision_subtitle">이 모델이 이미지를 분석할 수 있는 경우(Gemma 4, LLaVA, MiniCPM-V 등) 활성화하세요. 사용자 지정 엔드포인트의 사진 분석에 필요합니다.</string>
     <string name="secure_storage_unavailable">암호화된 저장소를 초기화할 수 없습니다. API 키는 이 기기에 저장되지 않습니다.</string>
     
     <!-- API Key Validation -->

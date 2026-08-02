@@ -144,6 +144,8 @@
     <string name="protocol_chat_completions">Chat Completions</string>
     <string name="protocol_responses">Responses</string>
     <string name="custom_models_path">Путь эндпоинта моделей</string>
+    <string name="custom_supports_vision">Модель поддерживает ввод изображений (зрение)</string>
+    <string name="custom_supports_vision_subtitle">Включите, если эта модель может анализировать изображения (например, Gemma 4, LLaVA, MiniCPM-V). Требуется для анализа фото на пользовательских эндпоинтах.</string>
     <string name="secure_storage_unavailable">Не удалось инициализировать зашифрованное хранилище. Ключи API не будут сохранены на этом устройстве.</string>
     
     <!-- API Key Validation -->

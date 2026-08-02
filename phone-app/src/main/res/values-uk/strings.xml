@@ -144,6 +144,8 @@
     <string name="protocol_chat_completions">Chat Completions</string>
     <string name="protocol_responses">Responses</string>
     <string name="custom_models_path">Шлях endpoint моделей</string>
+    <string name="custom_supports_vision">Модель підтримує введення зображень (зір)</string>
+    <string name="custom_supports_vision_subtitle">Увімкніть, якщо ця модель може аналізувати зображення (наприклад, Gemma 4, LLaVA, MiniCPM-V). Потрібно для аналізу фото на власних ендпоінтах.</string>
     <string name="secure_storage_unavailable">Не вдалося ініціалізувати зашифроване сховище. Ключі API не будуть збережені на цьому пристрої.</string>
     
     <!-- API Key Validation -->
