@@ -42,6 +42,20 @@ class SettingsRepository(private val context: Context) {
         private const val KEY_PERPLEXITY_API_KEY = "perplexity_api_key"
         private const val KEY_MOONSHOT_API_KEY = "moonshot_api_key"
         private const val KEY_CUSTOM_API_KEY = "custom_api_key"
+        private const val KEY_BAIDU_QIANFAN_API_KEY = "baidu_qianfan_api_key"
+        private const val KEY_BAIDU_USE_LEGACY_AUTH = "baidu_use_legacy_auth"
+
+        // Per-provider model memory (JSON map: provider name -> model id)
+        private const val KEY_PROVIDER_MODEL_IDS = "provider_model_ids"
+
+        // Alibaba Cloud Model Studio region
+        private const val KEY_ALIBABA_REGION = "alibaba_region"
+        private const val KEY_ALIBABA_CUSTOM_BASE_URL = "alibaba_custom_base_url"
+
+        // Custom endpoint protocol settings
+        private const val KEY_CUSTOM_PROTOCOL = "custom_protocol"
+        private const val KEY_CUSTOM_MODELS_PATH = "custom_models_path"
+        private const val KEY_CUSTOM_CAPABILITY_OVERRIDES = "custom_capability_overrides"
 
         // Keys for AnythingLLM provider settings (stored encrypted)
         private const val KEY_ANYTHINGLLM_SERVER_URL = "anythingllm_server_url"
@@ -82,11 +96,22 @@ class SettingsRepository(private val context: Context) {
         }
     }
     
-    private val masterKey = MasterKey.Builder(context, MasterKey.DEFAULT_MASTER_KEY_ALIAS)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-    
+    /**
+     * Non-null when Android Keystore-backed encrypted storage could not be
+     * initialized. In that case settings are kept in memory only for the
+     * session — they are NEVER silently written to plaintext preferences.
+     * UI should surface this to the user.
+     */
+    private val _secureStorageError = MutableStateFlow<String?>(null)
+    val secureStorageError: StateFlow<String?> = _secureStorageError.asStateFlow()
+
+    val isSecureStorageAvailable: Boolean
+        get() = _secureStorageError.value == null
+
     private val prefs: SharedPreferences = try {
+        val masterKey = MasterKey.Builder(context, MasterKey.DEFAULT_MASTER_KEY_ALIAS)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
         EncryptedSharedPreferences.create(
             context,
             PREFS_NAME,
@@ -95,11 +120,25 @@ class SettingsRepository(private val context: Context) {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     } catch (e: Exception) {
-        // Fallback to regular SharedPreferences if encryption fails
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        android.util.Log.e(
+            "SettingsRepository",
+            "Secure storage unavailable; settings will be kept in memory only (never persisted in plaintext)",
+            e
+        )
+        _secureStorageError.value =
+            "Encrypted storage could not be initialized. API keys will not be saved on this device."
+        InMemorySharedPreferences()
     }
     
-    private val _settingsFlow = MutableStateFlow(loadSettings())
+    private val _settingsFlow = MutableStateFlow(run {
+        val loaded = loadSettings()
+        val migrated = loaded.migrateLegacyModelIds()
+        if (migrated != loaded) {
+            // Persist migration result so it runs only once.
+            persistSettings(migrated)
+        }
+        migrated
+    })
     val settingsFlow: StateFlow<ApiSettings> = _settingsFlow.asStateFlow()
     
     /**
@@ -127,11 +166,31 @@ class SettingsRepository(private val context: Context) {
             savedSystemPrompt
         }
         
+        val savedProvider = AiProvider.fromName(
+            prefs.getString(KEY_AI_PROVIDER, AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name
+        )
+        val legacyModelId = prefs.getString(KEY_AI_MODEL, "gemini-2.5-flash") ?: "gemini-2.5-flash"
+        val providerModelIds = parseProviderModelIds(
+            prefs.getString(KEY_PROVIDER_MODEL_IDS, null),
+            savedProvider,
+            legacyModelId
+        )
+
+        val baiduQianfanKey = prefs.getString(KEY_BAIDU_QIANFAN_API_KEY, "") ?: ""
+        val baiduLegacyKey = prefs.getString(KEY_BAIDU_API_KEY, "") ?: ""
+        val baiduLegacySecret = prefs.getString(KEY_BAIDU_SECRET_KEY, "") ?: ""
+        // Migration: existing users with only the legacy key pair keep legacy mode
+        // until they add a Qianfan API key. Their credentials are never deleted.
+        val baiduUseLegacyAuth = if (prefs.contains(KEY_BAIDU_USE_LEGACY_AUTH)) {
+            prefs.getBoolean(KEY_BAIDU_USE_LEGACY_AUTH, false)
+        } else {
+            baiduQianfanKey.isBlank() && baiduLegacyKey.isNotBlank() && baiduLegacySecret.isNotBlank()
+        }
+
         return ApiSettings(
-            aiProvider = AiProvider.fromName(
-                prefs.getString(KEY_AI_PROVIDER, AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name
-            ),
-            aiModelId = prefs.getString(KEY_AI_MODEL, "gemini-2.5-flash") ?: "gemini-2.5-flash",
+            aiProvider = savedProvider,
+            aiModelId = legacyModelId,
+            providerModelIds = providerModelIds,
             geminiApiKey = prefs.getString(KEY_GEMINI_API_KEY, "") ?: "",
             openaiApiKey = prefs.getString(KEY_OPENAI_API_KEY, "") ?: "",
             anthropicApiKey = prefs.getString(KEY_ANTHROPIC_API_KEY, "") ?: "",
@@ -140,11 +199,20 @@ class SettingsRepository(private val context: Context) {
             xaiApiKey = prefs.getString(KEY_XAI_API_KEY, "") ?: "",
             alibabaApiKey = prefs.getString(KEY_ALIBABA_API_KEY, "") ?: "",
             zhipuApiKey = prefs.getString(KEY_ZHIPU_API_KEY, "") ?: "",
-            baiduApiKey = prefs.getString(KEY_BAIDU_API_KEY, "") ?: "",
-            baiduSecretKey = prefs.getString(KEY_BAIDU_SECRET_KEY, "") ?: "",
+            baiduApiKey = baiduLegacyKey,
+            baiduSecretKey = baiduLegacySecret,
+            baiduQianfanApiKey = baiduQianfanKey,
+            baiduUseLegacyAuth = baiduUseLegacyAuth,
+            alibabaRegion = prefs.getString(KEY_ALIBABA_REGION, AlibabaRegions.CHINA) ?: AlibabaRegions.CHINA,
+            alibabaCustomBaseUrl = prefs.getString(KEY_ALIBABA_CUSTOM_BASE_URL, "") ?: "",
             perplexityApiKey = prefs.getString(KEY_PERPLEXITY_API_KEY, "") ?: "",
             moonshotApiKey = prefs.getString(KEY_MOONSHOT_API_KEY, "") ?: "",
             customApiKey = prefs.getString(KEY_CUSTOM_API_KEY, "") ?: "",
+            customProtocol = prefs.getString(KEY_CUSTOM_PROTOCOL, "chat_completions") ?: "chat_completions",
+            customModelsPath = prefs.getString(KEY_CUSTOM_MODELS_PATH, "models") ?: "models",
+            customCapabilityOverrides = (
+                prefs.getString(KEY_CUSTOM_CAPABILITY_OVERRIDES, "") ?: ""
+                ).split(',').map { it.trim() }.filter { it.isNotBlank() }.toSet(),
             anythingllmServerUrl = prefs.getString(KEY_ANYTHINGLLM_SERVER_URL, "") ?: "",
             anythingllmApiKey = prefs.getString(KEY_ANYTHINGLLM_API_KEY, "") ?: "",
             anythingllmWorkspaceSlug = prefs.getString(KEY_ANYTHINGLLM_WORKSPACE_SLUG, "") ?: "",
@@ -212,12 +280,48 @@ class SettingsRepository(private val context: Context) {
     }
     
     /**
+     * Parse the persisted per-provider model map, seeding it from the legacy
+     * single-model setting on first launch after upgrade (migration).
+     */
+    private fun parseProviderModelIds(
+        json: String?,
+        activeProvider: AiProvider,
+        legacyModelId: String
+    ): Map<String, String> {
+        if (!json.isNullOrBlank()) {
+            try {
+                val obj = org.json.JSONObject(json)
+                val map = mutableMapOf<String, String>()
+                obj.keys().forEach { key ->
+                    obj.optString(key).takeIf { it.isNotBlank() }?.let { map[key] = it }
+                }
+                if (map.isNotEmpty()) return map
+            } catch (e: Exception) {
+                // Corrupted value: reseed below.
+            }
+        }
+        return if (legacyModelId.isNotBlank()) mapOf(activeProvider.name to legacyModelId) else emptyMap()
+    }
+
+    private fun serializeProviderModelIds(map: Map<String, String>): String {
+        val obj = org.json.JSONObject()
+        map.forEach { (k, v) -> obj.put(k, v) }
+        return obj.toString()
+    }
+
+    /**
      * Save settings
      */
     fun saveSettings(settings: ApiSettings) {
+        persistSettings(settings)
+        _settingsFlow.value = settings
+    }
+
+    private fun persistSettings(settings: ApiSettings) {
         prefs.edit().apply {
             putString(KEY_AI_PROVIDER, settings.aiProvider.name)
             putString(KEY_AI_MODEL, settings.aiModelId)
+            putString(KEY_PROVIDER_MODEL_IDS, serializeProviderModelIds(settings.providerModelIds))
             putString(KEY_GEMINI_API_KEY, settings.geminiApiKey)
             putString(KEY_OPENAI_API_KEY, settings.openaiApiKey)
             putString(KEY_ANTHROPIC_API_KEY, settings.anthropicApiKey)
@@ -228,6 +332,13 @@ class SettingsRepository(private val context: Context) {
             putString(KEY_ZHIPU_API_KEY, settings.zhipuApiKey)
             putString(KEY_BAIDU_API_KEY, settings.baiduApiKey)
             putString(KEY_BAIDU_SECRET_KEY, settings.baiduSecretKey)
+            putString(KEY_BAIDU_QIANFAN_API_KEY, settings.baiduQianfanApiKey)
+            putBoolean(KEY_BAIDU_USE_LEGACY_AUTH, settings.baiduUseLegacyAuth)
+            putString(KEY_ALIBABA_REGION, settings.alibabaRegion)
+            putString(KEY_ALIBABA_CUSTOM_BASE_URL, settings.alibabaCustomBaseUrl)
+            putString(KEY_CUSTOM_PROTOCOL, settings.customProtocol)
+            putString(KEY_CUSTOM_MODELS_PATH, settings.customModelsPath)
+            putString(KEY_CUSTOM_CAPABILITY_OVERRIDES, settings.customCapabilityOverrides.joinToString(","))
             putString(KEY_PERPLEXITY_API_KEY, settings.perplexityApiKey)
             putString(KEY_MOONSHOT_API_KEY, settings.moonshotApiKey)
             putString(KEY_CUSTOM_API_KEY, settings.customApiKey)
@@ -256,24 +367,51 @@ class SettingsRepository(private val context: Context) {
             putFloat(KEY_PRESENCE_PENALTY, settings.presencePenalty)
             apply()
         }
-        _settingsFlow.value = settings
     }
-    
+
     /**
      * Update single setting
      */
     fun updateAiProvider(provider: AiProvider) {
         val current = getSettings()
-        // When switching provider, auto-select the first model of that provider
-        val defaultModel = AvailableModels.getModelsForProvider(provider).firstOrNull()?.id 
-            ?: current.aiModelId
-        saveSettings(current.copy(aiProvider = provider, aiModelId = defaultModel))
+        // Restore the model the user last selected for this provider
+        // (per-provider model memory), not the first catalog entry.
+        val model = current.getModelIdForProvider(provider)
+        saveSettings(current.copy(aiProvider = provider, aiModelId = model))
     }
-    
+
     fun updateAiModel(modelId: String) {
-        saveSettings(getSettings().copy(aiModelId = modelId))
+        saveSettings(getSettings().withModelForProvider(getSettings().aiProvider, modelId))
     }
-    
+
+    fun updateBaiduQianfanApiKey(apiKey: String) {
+        saveSettings(getSettings().copy(baiduQianfanApiKey = apiKey))
+    }
+
+    fun updateBaiduUseLegacyAuth(useLegacy: Boolean) {
+        saveSettings(getSettings().copy(baiduUseLegacyAuth = useLegacy))
+    }
+
+    fun updateAlibabaRegion(region: String) {
+        saveSettings(getSettings().copy(alibabaRegion = region))
+    }
+
+    fun updateAlibabaCustomBaseUrl(baseUrl: String) {
+        saveSettings(getSettings().copy(alibabaCustomBaseUrl = baseUrl))
+    }
+
+    fun updateCustomProtocol(protocol: String) {
+        saveSettings(getSettings().copy(customProtocol = protocol))
+    }
+
+    fun updateCustomModelsPath(path: String) {
+        saveSettings(getSettings().copy(customModelsPath = path))
+    }
+
+    fun updateCustomCapabilityOverrides(overrides: Set<String>) {
+        saveSettings(getSettings().copy(customCapabilityOverrides = overrides))
+    }
+
     fun updateGeminiApiKey(apiKey: String) {
         saveSettings(getSettings().copy(geminiApiKey = apiKey))
     }
@@ -398,5 +536,80 @@ class SettingsRepository(private val context: Context) {
      */
     fun resetSystemPromptToDefault() {
         updateSystemPrompt(getDefaultSystemPrompt())
+    }
+}
+
+/**
+ * Volatile in-memory SharedPreferences used ONLY when Android Keystore-backed
+ * encrypted storage fails to initialize. Nothing is written to disk, so API
+ * keys are never persisted in plaintext. Settings last for the session.
+ */
+private class InMemorySharedPreferences : SharedPreferences {
+
+    private val data = mutableMapOf<String, Any?>()
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<SharedPreferences.OnSharedPreferenceChangeListener>()
+
+    override fun getAll(): Map<String, *> = data.toMap()
+
+    @Suppress("UNCHECKED_CAST")
+    override fun getString(key: String, defValue: String?): String? = data[key] as? String ?: defValue
+
+    @Suppress("UNCHECKED_CAST")
+    override fun getStringSet(key: String, defValues: Set<String>?): Set<String>? =
+        (data[key] as? Set<String>) ?: defValues
+
+    override fun getInt(key: String, defValue: Int): Int = data[key] as? Int ?: defValue
+
+    override fun getLong(key: String, defValue: Long): Long = data[key] as? Long ?: defValue
+
+    override fun getFloat(key: String, defValue: Float): Float = data[key] as? Float ?: defValue
+
+    override fun getBoolean(key: String, defValue: Boolean): Boolean = data[key] as? Boolean ?: defValue
+
+    override fun contains(key: String): Boolean = data.containsKey(key)
+
+    override fun edit(): SharedPreferences.Editor = Editor()
+
+    override fun registerOnSharedPreferenceChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        listeners.add(listener)
+    }
+
+    override fun unregisterOnSharedPreferenceChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        listeners.remove(listener)
+    }
+
+    private inner class Editor : SharedPreferences.Editor {
+        private val pending = mutableMapOf<String, Any?>()
+        private val removals = mutableSetOf<String>()
+        private var clearAll = false
+
+        override fun putString(key: String, value: String?): SharedPreferences.Editor = apply { pending[key] = value }
+        override fun putStringSet(key: String, values: Set<String>?): SharedPreferences.Editor = apply { pending[key] = values }
+        override fun putInt(key: String, value: Int): SharedPreferences.Editor = apply { pending[key] = value }
+        override fun putLong(key: String, value: Long): SharedPreferences.Editor = apply { pending[key] = value }
+        override fun putFloat(key: String, value: Float): SharedPreferences.Editor = apply { pending[key] = value }
+        override fun putBoolean(key: String, value: Boolean): SharedPreferences.Editor = apply { pending[key] = value }
+        override fun remove(key: String): SharedPreferences.Editor = apply { removals.add(key) }
+        override fun clear(): SharedPreferences.Editor = apply { clearAll = true }
+
+        override fun commit(): Boolean {
+            applyChanges()
+            return true
+        }
+
+        override fun apply() {
+            applyChanges()
+        }
+
+        @Synchronized
+        private fun applyChanges() {
+            if (clearAll) data.clear()
+            removals.forEach { data.remove(it) }
+            pending.forEach { (k, v) -> data[k] = v }
+            val changedKeys = pending.keys + removals
+            listeners.forEach { listener ->
+                changedKeys.forEach { key -> listener.onSharedPreferenceChanged(this@InMemorySharedPreferences, key) }
+            }
+        }
     }
 }

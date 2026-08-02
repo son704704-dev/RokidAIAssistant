@@ -79,6 +79,39 @@
 
 ---
 
+## AI Provider 架構（2026-08-02 更新）
+
+AI 服務採資料驅動架構（`phone-app/src/.../ai/catalog/`）：
+
+- **ProviderRegistry / ProviderDescriptor**：每家供應商一筆描述（協定
+  `ApiProtocol`、模型目錄格式、models endpoint、驗證方式、區域端點）。
+  新增供應商不再需要修改大型 `when` 區塊。
+- **四層模型目錄（ModelCatalogRepository）**：官方 Models API（Live）→
+  本機快取（24 小時 TTL）→ 經官方文件驗證的靜態 fallback → 使用者手動輸入
+  模型 ID。fallback 清單記錄 `LAST_VERIFIED_DATE` 與官方文件來源；preview
+  或 deprecated 模型不會成為唯一預設模型。
+- **ModelCapabilities（模型層級能力）**：text/image/audio input、streaming、
+  tool calling、reasoning、realtime、transcription、context 大小。
+  圖片能力由「模型」決定而非「供應商」：不支援圖片的模型不會收到圖片請求。
+- **ProviderRequestPolicy**：能力驅動的請求參數。OpenAI 專用參數
+  （`reasoning_effort`、`verbosity`、`max_completion_tokens`）只會送給 OpenAI；
+  DeepSeek reasoning 模型移除 sampling 參數；Perplexity 不送 penalty 參數。
+- **AiStreamEvent 統一串流**：`TextDelta` / `ToolCallDelta` / `Citation` /
+  `Usage` / `Thinking` / `Completed` / `Error`。OpenAI Chat Completions、
+  OpenAI Responses、Anthropic Messages、Gemini generateContent 皆有 SSE
+  串流實作。DeepSeek `reasoning_content` 與 Claude thinking 內容不會顯示給
+  使用者（僅顯示「思考中」狀態）。
+- **ProviderApiException 錯誤分類**：Invalid API key、Permission denied、
+  Model unavailable/deprecated、Rate limit、Quota exceeded、Region mismatch、
+  Invalid request、Unsupported image、Context too long、Network/Timeout/
+  Service unavailable，保留 HTTP status 與供應商錯誤碼，並移除金鑰等敏感內容。
+- **STT 與聊天解耦**：只有具備實際 transcription endpoint 的供應商
+  （OpenAI Whisper、Groq Whisper、Gemini 原生音訊）可執行語音轉文字。
+- **Baidu**：預設使用 Qianfan v2（Bearer API Key）；舊 API Key + Secret Key
+  OAuth 保留為 legacy 模式並自動 migration，舊憑證不會被刪除。
+
+---
+
 ## 模組指南
 
 ### 專案結構

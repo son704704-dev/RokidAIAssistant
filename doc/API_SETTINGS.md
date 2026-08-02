@@ -12,14 +12,17 @@
 # 1. Copy template
 cp local.properties.template local.properties
 
-# 2. Add your Gemini API key (minimum required)
+# 2. (Optional) Add any provider key — the app installs and opens without one.
+#    Keys can also be entered later in the in-app Settings screen.
 echo "GEMINI_API_KEY=your_key_here" >> local.properties
 
 # 3. Rebuild
 ./gradlew assembleDebug
 ```
 
-> Get your free Gemini API key at [Google AI Studio](https://ai.google.dev/) in 2 minutes.
+> No AI key is required to install the app or open Settings. You only need a
+> key for the single provider you actually choose to use (entered in-app or
+> via `local.properties`).
 
 ---
 
@@ -56,24 +59,66 @@ echo "GEMINI_API_KEY=your_key_here" >> local.properties
 
 ### Required Keys
 
-| Key                   | Required       | Where to Get                                        |
-| --------------------- | -------------- | --------------------------------------------------- |
-| `GEMINI_API_KEY`      | ✅ Yes         | [Google AI Studio](https://ai.google.dev/)          |
-| `ROKID_CLIENT_SECRET` | ⚠️ For glasses | Rokid Developer Portal                              |
-| `OPENAI_API_KEY`      | Optional       | [OpenAI Platform](https://platform.openai.com/)     |
-| `ANTHROPIC_API_KEY`   | Optional       | [Anthropic Console](https://console.anthropic.com/) |
+| Key                   | Required             | Where to Get                                        |
+| --------------------- | -------------------- | --------------------------------------------------- |
+| `ROKID_CLIENT_SECRET` | ⚠️ For glasses only  | Rokid Developer Portal                              |
+| `GEMINI_API_KEY`      | Optional             | [Google AI Studio](https://ai.google.dev/)          |
+| `OPENAI_API_KEY`      | Optional             | [OpenAI Platform](https://platform.openai.com/)     |
+| `ANTHROPIC_API_KEY`   | Optional             | [Anthropic Console](https://console.anthropic.com/) |
 
-### Provider Comparison
+> Only the provider you select requires credentials. Build-time keys in
+> `local.properties` are optional; in-app keys are stored in Android
+> Keystore-backed encrypted preferences (never in plaintext, never in logs).
 
-| Provider      | Vision | Streaming | Free Tier   | Latency  |
-| ------------- | ------ | --------- | ----------- | -------- |
-| **Gemini**    | ✅     | ✅        | ✅ Generous | Medium   |
-| **OpenAI**    | ✅     | ✅        | ❌          | Low      |
-| **Anthropic** | ✅     | ✅        | ❌          | Medium   |
-| **Groq**      | ✅     | ✅        | ✅ Limited  | Very Low |
-| **DeepSeek**  | ❌     | ✅        | ✅          | Medium   |
+### Provider Capability Matrix
 
-> Note: In current code, non-CUSTOM providers use built-in default base URLs; `CUSTOM` allows user-defined OpenAI-compatible endpoints.
+Last verified: **2026-08-02**. The app loads each provider's model list
+dynamically from its official Models API; the "Representative fallback models"
+column is only used when the API is unreachable and no cache exists.
+
+| Provider    | Protocol                 | Dynamic models | Vision (per model) | Streaming | STT endpoint | Realtime | Auth                |
+| ----------- | ------------------------ | -------------- | ------------------ | --------- | ------------ | -------- | ------------------- |
+| Gemini      | generateContent (native) | ✅ Models API  | ✅                 | ✅ SSE    | ✅ native audio | ❌    | API key             |
+| OpenAI      | Responses API + Chat Completions fallback | ✅ Models API | ✅ | ✅ SSE | ✅ Whisper | ❌ | Bearer key |
+| Anthropic   | Messages (native)        | ✅ Models API  | ✅                 | ✅ SSE    | ❌           | ❌       | x-api-key           |
+| DeepSeek    | Chat Completions         | ✅ Models API  | ❌                 | ✅ SSE    | ❌           | ❌       | Bearer key          |
+| Groq        | Chat Completions         | ✅ Models API  | ✅ (select models) | ✅ SSE    | ✅ Whisper   | ❌       | Bearer key          |
+| xAI         | Chat Completions         | ✅ Models API  | ✅ (e.g. Grok 4.5) | ✅ SSE    | ❌           | ❌       | Bearer key          |
+| Alibaba     | Chat Completions         | ✅ Models API  | ✅ (VL models)     | ✅ SSE    | ❌           | ❌       | Bearer key + region |
+| Z.AI (GLM)  | Chat Completions         | ✅ Models API  | ✅ (GLM-V models)  | ✅ SSE    | ❌           | ❌       | Bearer key          |
+| Baidu       | Qianfan v2 (+ legacy OAuth) | ✅ Models API | ✅ (VL models)  | ✅ SSE    | ❌           | ❌       | Bearer key / legacy pair |
+| Perplexity  | Sonar Chat Completions   | ❌ (fallback list) | ✅ (Sonar)   | ✅ SSE    | ❌           | ❌       | Bearer key          |
+| Moonshot    | Chat Completions         | ✅ Models API  | ✅ (Kimi multimodal) | ✅ SSE  | ❌           | ❌       | Bearer key          |
+| Mistral     | Chat Completions         | ✅ Models API (capabilities parsed) | ✅ (select models) | ✅ SSE | ❌ | ❌ | Bearer key |
+| Gemini Live | Live WebSocket           | ✅ Models API  | ✅                 | ✅ WS     | ✅ native    | ✅       | API key             |
+| AnythingLLM | Workspace API            | ❌ (workspace-defined) | ⚠️ unknown | ❌    | ❌           | ❌       | API key + URL       |
+| Custom      | Chat Completions or Responses | ✅ (endpoint-dependent) | ⚠️ manual override | ✅ | ❌    | ❌       | Optional key        |
+
+> Vision is a **model-level** capability: a provider marked ✅ still rejects
+> image requests for its text-only models. Free/trial quotas may exist for
+> some providers — check each official console; they are not guaranteed to
+> exist permanently.
+
+### Representative fallback models (verified 2026-08-02)
+
+| Provider   | Fallback examples (stable unless noted)                                  |
+| ---------- | ------------------------------------------------------------------------ |
+| Gemini     | gemini-3.6-flash, gemini-3.5-flash(-lite), gemini-2.5-pro/flash/lite     |
+| OpenAI     | gpt-5.6, gpt-5.6-terra, gpt-5.6-luna (gpt-5.4, gpt-4o: legacy)           |
+| Anthropic  | claude-sonnet-5, claude-opus-5, claude-fable-5, claude-opus-4-8, claude-haiku-4-5 |
+| DeepSeek   | deepseek-v4-flash, deepseek-v4-pro (deepseek-chat/reasoner: deprecated → migrated) |
+| Groq       | llama-3.3-70b-versatile, gpt-oss-120b/20b (Llama 4 Scout/Maverick: preview) |
+| xAI        | grok-4.5 (vision), grok-4.1-fast, grok-4                                 |
+| Alibaba    | qwen3.7-max/plus/flash, qwen2.5-vl-72b/32b (vision)                      |
+| Z.AI       | glm-5.1, glm-5v-turbo (vision), glm-4.7-flash                            |
+| Baidu      | ernie-5.1, ernie-5.0, ernie-4.5-turbo-128k, ernie-4.5-turbo-vl (vision)  |
+| Perplexity | sonar, sonar-pro, sonar-reasoning-pro, sonar-deep-research               |
+| Moonshot   | kimi-k2.5, kimi-k2.5-thinking                                            |
+| Mistral    | mistral-medium-3-5, mistral-large-2512, mistral-small-2603, ministral-3-8b |
+
+> The live Models API of your account always wins over this list. To update
+> the fallback: check each provider's official model docs, edit
+> `ai/catalog/FallbackModelCatalog.kt`, and bump `LAST_VERIFIED_DATE`.
 
 ---
 
@@ -81,22 +126,36 @@ echo "GEMINI_API_KEY=your_key_here" >> local.properties
 
 ### Supported Providers
 
-| Provider        | Models                                      | Vision | Base URL                                             |
-| --------------- | ------------------------------------------- | ------ | ---------------------------------------------------- |
-| **Gemini**      | Gemini 3.6 Flash, 3.1 Pro, 3 Flash, 2.5 Pro/Flash/Lite | ✅ | `https://generativelanguage.googleapis.com/v1beta/`  |
-| **OpenAI**      | GPT-5.6, 5.5/5.4/5.2/5.1, 5.2 Codex, 5 Mini/Nano, o3, o3 Pro | ✅ | `https://api.openai.com/v1/`                         |
-| **Anthropic**   | Claude Opus 5, Opus 4.7, Opus 4.6, Sonnet 4.6, Haiku 4.5 | ✅ | `https://api.anthropic.com/v1/`                      |
-| **DeepSeek**    | DeepSeek Chat, DeepSeek Reasoner            | ❌     | `https://api.deepseek.com/`                          |
-| **Groq**        | Llama 4 Scout/Maverick                      | ✅     | `https://api.groq.com/openai/v1/`                    |
-| **xAI**         | Grok 4.20, 4, 4.1 Fast, 3, 3 Mini           | ❌     | `https://api.x.ai/v1/`                               |
-| **Alibaba**     | Qwen 3.7 Flash, Qwen 3 Max, Qwen 2.5 VL 72B/32B/7B | ✅ | `https://dashscope.aliyuncs.com/compatible-mode/v1/` |
-| **Zhipu**       | GLM-5, GLM-4.7, GLM-4 Plus                  | ✅     | `https://api.z.ai/api/paas/v4/`                      |
-| **Baidu**       | ERNIE 4.0 8K, ERNIE 3.5 8K                  | ❌     | `https://aip.baidubce.com/rpc/2.0/...`               |
-| **Perplexity**  | Sonar, Sonar Pro, Sonar Reasoning Pro       | ❌     | `https://api.perplexity.ai/`                         |
-| **Moonshot**    | Kimi K3, Kimi K2.5, Moonshot V1 128K/32K/8K | ✅     | `https://api.moonshot.ai/v1/`                        |
-| **Mistral**     | Mistral Large, Medium 3.5, Ministral 3B      | ✅     | `https://api.mistral.ai/v1/`                         |
-| **Gemini Live** | Gemini Live (session mode)                  | ✅     | `wss://generativelanguage.googleapis.com/ws/...`     |
-| **Custom**      | User-defined                                | Varies | User-defined (e.g., Ollama, LM Studio)               |
+The model list for each provider is loaded dynamically from its official API
+(live → cache → verified fallback → manual entry). Base URLs:
+
+| Provider        | Base URL                                                           |
+| --------------- | ------------------------------------------------------------------ |
+| **Gemini**      | `https://generativelanguage.googleapis.com/v1beta/`                |
+| **OpenAI**      | `https://api.openai.com/v1/`                                       |
+| **Anthropic**   | `https://api.anthropic.com/v1/`                                    |
+| **DeepSeek**    | `https://api.deepseek.com/`                                        |
+| **Groq**        | `https://api.groq.com/openai/v1/`                                  |
+| **xAI**         | `https://api.x.ai/v1/`                                             |
+| **Alibaba**     | Regional endpoints (China / Singapore / US / Germany / Japan / custom workspace URL) |
+| **Zhipu**       | `https://api.z.ai/api/paas/v4/`                                    |
+| **Baidu**       | `https://qianfan.baidubce.com/v2/` (legacy RPC kept for migration) |
+| **Perplexity**  | `https://api.perplexity.ai/` (Sonar)                               |
+| **Moonshot**    | `https://api.moonshot.ai/v1/`                                      |
+| **Mistral**     | `https://api.mistral.ai/v1/`                                       |
+| **Gemini Live** | `wss://generativelanguage.googleapis.com/ws/...`                   |
+| **AnythingLLM** | User-defined server URL                                            |
+| **Custom**      | User-defined (Ollama, LM Studio, vLLM...)                          |
+
+### Model catalog (four tiers)
+
+1. **Live** — fetched from the provider's Models API with your key.
+2. **Cached** — last successful fetch, reused for 24h (and longer on network failure).
+3. **Fallback** — verified static list (2026-08-02), never contains TTS/image-generation/transcription models.
+4. **Manual** — you can always type a model ID by hand; manual selections are never deleted, even if absent from the remote list (a warning is shown instead).
+
+Each provider remembers its own last-selected model: switching
+OpenAI → Gemini → OpenAI restores your previous OpenAI model.
 
 ### Getting API Keys
 
@@ -158,14 +217,18 @@ Steps:
 
 ### Built-in AI Provider STT
 
-These providers use their native transcription capabilities:
+STT is decoupled from chat providers. Only providers with a real transcription
+endpoint can transcribe:
 
-| Provider | Method                 | Streaming |
-| -------- | ---------------------- | --------- |
-| Gemini   | Native multimodal      | ❌        |
-| OpenAI   | Whisper API            | ❌        |
-| Groq     | Whisper (accelerated)  | ❌        |
-| xAI      | OpenAI-compatible path | ❌        |
+| Provider | Method                     | Notes                              |
+| -------- | -------------------------- | ---------------------------------- |
+| Gemini   | Native multimodal audio    | Uses the selected Gemini chat model |
+| OpenAI   | Whisper `/audio/transcriptions` | Transcription model, not a chat model |
+| Groq     | Whisper (accelerated)      | `whisper-large-v3-turbo`           |
+
+> Being "OpenAI-compatible" does NOT imply a working transcription endpoint —
+> xAI, DeepSeek, Alibaba, Zhipu, Moonshot, Mistral, Perplexity and Baidu chat
+> providers are never sent STT requests.
 
 ### Dedicated STT Providers
 
@@ -297,12 +360,28 @@ Additional API keys can be configured in the app's **Settings** screen:
 
 | Setting                 | Location in App               | Purpose                                      |
 | ----------------------- | ----------------------------- | -------------------------------------------- |
-| AI Provider             | Settings → AI Provider        | Select Gemini/OpenAI/etc.                    |
-| Model                   | Settings → Model              | Choose specific model                        |
-| Custom Endpoint         | Settings → Custom             | For Ollama/LM Studio                         |
+| AI Provider             | Settings → AI Provider        | Select provider (shows protocol + configured state) |
+| Model                   | Settings → Model              | Search/refresh catalog, source labels (Live/Cached/Fallback), capability badges, manual model ID |
+| API Keys                | Settings → API Keys           | Only the selected provider's credentials are required |
+| Baidu Auth              | Settings → API Keys (Baidu)   | Qianfan v2 key, or legacy API Key + Secret Key toggle |
+| Alibaba Region          | Settings → API Keys (Alibaba) | China / Singapore / US / Germany / Japan / custom workspace URL |
+| Custom Endpoint         | Settings → Custom             | Base URL, model ID, optional key, models path, Chat Completions/Responses protocol (cleartext HTTP warning) |
 | STT Provider            | Settings → Speech             | Configure STT                                |
 | System Prompt           | Settings → System Prompt      | Customize AI behavior                        |
 | Auto Analyze Recordings | Settings → Recording Settings | Auto-send recordings to AI for transcription |
+
+### Baidu migration
+
+New Baidu setups use a single **Qianfan v2 API key** (Bearer). Existing
+installations that only have the legacy API Key + Secret Key pair keep working
+in legacy mode automatically — the old credentials are never deleted, and you
+can switch explicitly with the "Legacy authentication" toggle.
+
+### DeepSeek migration
+
+Stored selections of the legacy `deepseek-chat` / `deepseek-reasoner` IDs are
+migrated automatically to `deepseek-v4-flash` / `deepseek-v4-pro`. You may
+still enter the old IDs manually (shown with a deprecated warning).
 
 **Path**: `phone-app/src/.../ui/settings/SettingsScreen.kt`
 
@@ -339,9 +418,10 @@ A: Keys are embedded at build time. Rebuild release after key changes:
 **Q: Gemini returns "quota exceeded"**
 
 ```
-A: Free tier has limits. Options:
-   1. Wait for quota reset (daily)
-   2. Upgrade to paid tier
+A: Quota depends on your Google AI plan (trial/free quotas may exist — see
+   the official console; they are not guaranteed permanently). Options:
+   1. Wait for quota reset
+   2. Upgrade the plan
    3. Switch to another provider temporarily
 ```
 
@@ -349,7 +429,7 @@ A: Free tier has limits. Options:
 
 ```
 A: 1. Check API key is valid
-   2. Ensure billing is set up (no free tier)
+   2. Ensure billing is set up for the account
    3. Verify key has correct permissions
 ```
 

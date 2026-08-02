@@ -1,9 +1,16 @@
 package com.example.rokidphone.service.ai
 
 import android.util.Log
+import com.example.rokidphone.ai.catalog.ModelCapabilityResolver
+import com.example.rokidphone.ai.catalog.ProviderApiException
+import com.example.rokidphone.ai.catalog.ProviderErrorKind
 import com.example.rokidphone.data.AiProvider
 import com.example.rokidphone.service.SpeechResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -12,14 +19,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * OpenAI-Compatible Service Implementation
- * Handles all OpenAI-compatible APIs including:
- * - OpenAI
- * - DeepSeek
- * - Groq
- * - Custom/Self-hosted (Ollama, LM Studio, vLLM, etc.)
- * 
- * This is a generic implementation that works with any OpenAI-compatible endpoint.
+ * OpenAI-Compatible Service Implementation.
+ *
+ * Covers Chat Completions (OpenAI, DeepSeek, Groq, xAI, Alibaba, Zhipu,
+ * Moonshot, Mistral, Perplexity, Custom) and, when [useResponsesApi] is set,
+ * the OpenAI Responses API with automatic Chat-Completions fallback.
+ *
+ * Request parameters are decided by [ProviderRequestPolicies] (capability
+ * driven), never by passing OpenAI-specific parameters to other providers.
  */
 open class OpenAiCompatibleService(
     apiKey: String,
@@ -32,12 +39,14 @@ open class OpenAiCompatibleService(
     topP: Float = 1.0f,
     frequencyPenalty: Float = 0.0f,
     presencePenalty: Float = 0.0f,
-    /** "none" | "minimal" | "low" | "medium" | "high" | "xhigh" — GPT-5.x / o-series only. */
+    /** "none" | "minimal" | "low" | "medium" | "high" | "xhigh" — OpenAI reasoning models only. */
     val reasoningEffort: String? = null,
-    /** "low" | "medium" | "high" — GPT-5.2+ only. */
-    val verbosity: String? = null
+    /** "low" | "medium" | "high" — OpenAI GPT-5.2+ only. */
+    val verbosity: String? = null,
+    /** Use the OpenAI Responses API instead of Chat Completions (falls back automatically). */
+    private val useResponsesApi: Boolean = false
 ) : BaseAiService(apiKey, modelId, systemPrompt, temperature, maxTokens, topP, frequencyPenalty, presencePenalty), AiServiceProvider {
-    
+
     companion object {
         private const val TAG = "OpenAiCompatibleService"
 
@@ -46,11 +55,20 @@ open class OpenAiCompatibleService(
          * presencePenalty, frequencyPenalty, stop, and reasoning_effort.
          */
         fun isReasoningOnlyModel(modelId: String): Boolean =
-            modelId == "grok-4" || modelId.startsWith("grok-4-") && !modelId.startsWith("grok-4.")
+            ProviderRequestPolicies.isXaiReasoningOnly(modelId)
     }
-    
+
     override val provider = providerType
-    
+
+    /** Effective request policy for the current provider+model. */
+    private val policy: ProviderRequestPolicy
+        get() = ProviderRequestPolicies.resolve(
+            providerType,
+            modelId,
+            ModelCapabilityResolver.resolve(providerType, modelId),
+            reasoningEffort
+        )
+
     /**
      * Build the full endpoint URL
      */
@@ -59,7 +77,7 @@ open class OpenAiCompatibleService(
         val normalizedEndpoint = endpoint.trimStart('/')
         return "$normalizedBase/$normalizedEndpoint"
     }
-    
+
     /**
      * Build authorization header based on provider type
      */
@@ -72,39 +90,24 @@ open class OpenAiCompatibleService(
         }
     }
 
-    /**
-     * Emit the correct token-limit key for the current model.
-     * GPT-5 / o-series use `max_completion_tokens`; everything else uses `max_tokens`.
-     */
+    /** Emit the token-limit field dictated by the policy (if any). */
     private fun putTokenLimit(json: JSONObject, tokens: Int) {
-        if (modelId.startsWith("o") || modelId.startsWith("gpt-5")) {
-            json.put("max_completion_tokens", tokens)
-        } else {
-            json.put("max_tokens", tokens)
+        when (policy.tokenLimitField) {
+            TokenLimitField.MAX_COMPLETION_TOKENS -> json.put("max_completion_tokens", tokens)
+            TokenLimitField.MAX_TOKENS -> json.put("max_tokens", tokens)
+            TokenLimitField.NONE -> Unit
         }
     }
 
-    /**
-     * Whether the GPT-5.x / o-series `reasoning_effort` parameter applies to this model.
-     */
-    private fun requiresReasoningEffort(): Boolean =
-        modelId.startsWith("o") || modelId.startsWith("gpt-5")
+    private fun requiresReasoningEffort(): Boolean = policy.supportsReasoningEffort
 
-    /**
-     * Whether the GPT-5.x `verbosity` parameter applies to this model (5.2 / 5.4 and later).
-     */
-    private fun requiresVerbosity(): Boolean =
-        modelId.startsWith("gpt-5.2") || modelId.startsWith("gpt-5.4")
+    private fun requiresVerbosity(): Boolean = policy.supportsVerbosity
 
-    /**
-     * Whether sampling params (temperature, top_p, penalties, stop) should be omitted.
-     * True for o-series, and for any GPT-5 model whose effective reasoning_effort is not "none".
-     */
-    private fun isSamplingLocked(effectiveEffort: String?): Boolean {
-        if (modelId.startsWith("o")) return true
-        if (modelId.startsWith("gpt-5") && effectiveEffort != null && effectiveEffort != "none") return true
-        return false
-    }
+    /** Sampling params locked out (reasoning models). */
+    private fun isSamplingLocked(): Boolean = !policy.allowSampling
+
+    private fun effectiveReasoningEffort(): String? =
+        if (requiresReasoningEffort()) reasoningEffort ?: "minimal" else null
 
     /**
      * Hook for subclasses to mutate the chat request JSON just before it is sent
@@ -121,60 +124,66 @@ open class OpenAiCompatibleService(
      * behaviour of using `content`.
      */
     protected open fun onAssistantMessage(messageObj: JSONObject): String? = null
-    
+
     /**
-     * Speech Recognition - Using Whisper API (if supported)
+     * Hook for subclasses to augment the final text with typed metadata that the
+     * UI cannot render yet (e.g. Perplexity citations). Never loses data.
      */
+    protected open fun augmentResponseText(fullJson: JSONObject, text: String): String = text
+
+    // ==================== Speech recognition (STT decoupled from chat) ====================
+
     override suspend fun transcribe(pcmAudioData: ByteArray, languageCode: String): SpeechResult {
         return withContext(Dispatchers.IO) {
-            when (providerType) {
-                AiProvider.CUSTOM -> {
-                    // Custom providers typically don't support STT
-                    SpeechResult.Error("Speech recognition not supported for custom providers")
-                }
-                AiProvider.DEEPSEEK -> {
-                    SpeechResult.Error("DeepSeek does not support speech recognition")
-                }
-                else -> {
-                    // OpenAI, Groq support Whisper
-                    transcribeWithWhisper(pcmAudioData, languageCode)
+            val sttPolicy = policy
+            if (!sttPolicy.supportsAudioTranscriptions || sttPolicy.transcriptionModel == null) {
+                return@withContext when (providerType) {
+                    AiProvider.CUSTOM ->
+                        SpeechResult.Error("Speech recognition not supported for custom providers")
+                    else ->
+                        SpeechResult.Error("$providerType does not support speech recognition via this endpoint")
                 }
             }
+            transcribeWithWhisper(pcmAudioData, languageCode, sttPolicy.transcriptionModel)
         }
     }
-    
-    private suspend fun transcribeWithWhisper(pcmAudioData: ByteArray, languageCode: String): SpeechResult {
+
+    private suspend fun transcribeWithWhisper(
+        pcmAudioData: ByteArray,
+        languageCode: String,
+        transcriptionModel: String
+    ): SpeechResult {
         return withContext(Dispatchers.IO) {
-            Log.d(TAG, "Starting Whisper transcription, audio size: ${pcmAudioData.size} bytes")
-            
+            Log.d(TAG, "Starting transcription, audio size: ${pcmAudioData.size} bytes")
+
             if (pcmAudioData.size < 1000) {
                 return@withContext SpeechResult.Error("Audio too short, please try again")
             }
-            
+
             val wavData = pcmToWav(pcmAudioData)
             val boundary = "----WebKitFormBoundary${System.currentTimeMillis()}"
-            val requestBody = buildMultipartBody(boundary, wavData, languageCode)
-            
+            val requestBody = buildMultipartBody(boundary, wavData, languageCode, transcriptionModel)
+
             val url = buildUrl("audio/transcriptions")
             val authHeader = buildAuthHeader()
-            
+
             try {
                 val requestBuilder = Request.Builder()
                     .url(url)
                     .addHeader("Content-Type", "multipart/form-data; boundary=$boundary")
                     .post(requestBody.toRequestBody("multipart/form-data; boundary=$boundary".toMediaType()))
-                
+
                 if (authHeader.first.isNotBlank()) {
                     requestBuilder.addHeader(authHeader.first, authHeader.second)
                 }
-                
+
                 client.newCall(requestBuilder.build()).execute().use { response ->
                     val responseBody = response.body?.string()
-                    
+
                     if (response.isSuccessful && responseBody != null) {
                         val json = JSONObject(responseBody)
                         val text = json.optString("text", "").trim()
-                        
+
                         if (text.isEmpty()) {
                             Log.w(TAG, "Empty transcription result")
                             SpeechResult.Error("No speech detected")
@@ -183,22 +192,28 @@ open class OpenAiCompatibleService(
                             SpeechResult.Success(text)
                         }
                     } else {
-                        Log.e(TAG, "API error: ${response.code}, body: $responseBody")
-                        SpeechResult.Error("Speech recognition failed: ${response.code}")
+                        val error = ProviderApiException.fromHttpStatus(response.code, responseBody)
+                        Log.e(TAG, "Transcription API error: ${error.kind}")
+                        SpeechResult.Error("Speech recognition failed: ${error.message}")
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Whisper transcription error", e)
-                SpeechResult.Error("Speech recognition error: ${e.message}")
+                Log.e(TAG, "Transcription error", e)
+                SpeechResult.Error("Speech recognition error: ${ProviderApiException.sanitize(e.message)}")
             }
         }
     }
-    
-    private fun buildMultipartBody(boundary: String, wavData: ByteArray, languageCode: String): ByteArray {
+
+    private fun buildMultipartBody(
+        boundary: String,
+        wavData: ByteArray,
+        languageCode: String,
+        transcriptionModel: String
+    ): ByteArray {
         val output = java.io.ByteArrayOutputStream()
         val writer = output.bufferedWriter()
         val normalizedLanguageCode = languageCode.substringBefore('-').ifBlank { "auto" }.lowercase()
-        
+
         // file field
         writer.write("--$boundary\r\n")
         writer.write("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
@@ -206,163 +221,458 @@ open class OpenAiCompatibleService(
         writer.flush()
         output.write(wavData)
         writer.write("\r\n")
-        
-        // model field
-        val whisperModel = when (providerType) {
-            AiProvider.GROQ -> "whisper-large-v3-turbo"
-            else -> "whisper-1"
-        }
+
+        // model field — STT model comes from the policy, never from the chat model
         writer.write("--$boundary\r\n")
         writer.write("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
-        writer.write("$whisperModel\r\n")
-        
+        writer.write("$transcriptionModel\r\n")
+
         // language field
         writer.write("--$boundary\r\n")
         writer.write("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
         writer.write("$normalizedLanguageCode\r\n")
-        
+
         writer.write("--$boundary--\r\n")
         writer.flush()
-        
+
         return output.toByteArray()
     }
-    
-    /**
-     * Text Chat - Using Chat Completions API
-     */
+
+    // ==================== Chat (non-streaming, compatibility API) ====================
+
     override suspend fun chat(userMessage: String): String {
         return withContext(Dispatchers.IO) {
             Log.d(TAG, "Chat request to $providerType: $userMessage")
-            
-            val messages = JSONArray().apply {
-                // System prompt
-                put(JSONObject().apply {
-                    put("role", "system")
-                    put("content", getFullSystemPrompt())
-                })
-                
-                // Conversation history
-                for ((role, content) in conversationHistory.takeLast(6)) {
-                    put(JSONObject().apply {
-                        put("role", role)
-                        put("content", content)
-                    })
-                }
-                
-                // Current user message
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", userMessage)
-                })
-            }
-            
-            val isReasoningOnly = isReasoningOnlyModel(modelId)
-            val effectiveEffort: String? = if (requiresReasoningEffort()) {
-                // Default to "minimal" for short AR voice replies; user can override.
-                reasoningEffort ?: "minimal"
+            if (useResponsesApi) {
+                chatViaResponses(userMessage, streaming = false)
+                    ?: chatViaChatCompletions(userMessage) // Responses rejected → fallback
             } else {
-                null
+                chatViaChatCompletions(userMessage)
             }
-            val samplingLocked = isSamplingLocked(effectiveEffort)
+        }
+    }
 
-            val requestJson = JSONObject().apply {
-                put("model", modelId)
-                put("messages", messages)
+    private fun buildMessagesJson(userMessage: String): JSONArray {
+        return JSONArray().apply {
+            put(JSONObject().apply {
+                put("role", "system")
+                put("content", getFullSystemPrompt())
+            })
+            for ((role, content) in conversationHistory.takeLast(6)) {
+                put(JSONObject().apply {
+                    put("role", role)
+                    put("content", content)
+                })
+            }
+            put(JSONObject().apply {
+                put("role", "user")
+                put("content", userMessage)
+            })
+        }
+    }
 
-                // Sampling params are rejected by o-series and by GPT-5 when effort != "none",
-                // and by pure reasoning models (Grok 4).
-                if (!isReasoningOnly && !samplingLocked) {
-                    put("temperature", temperature.toDouble())
-                    put("top_p", topP.toDouble())
+    /** Apply the request policy to a Chat Completions body. */
+    private fun buildChatCompletionsBody(messages: JSONArray, stream: Boolean): JSONObject {
+        val p = policy
+        val json = JSONObject().apply {
+            put("model", modelId)
+            put("messages", messages)
+
+            if (!isSamplingLocked()) {
+                put("temperature", temperature.toDouble())
+                put("top_p", topP.toDouble())
+                if (p.allowPenalties) {
                     if (frequencyPenalty != 0.0f) put("frequency_penalty", frequencyPenalty.toDouble())
                     if (presencePenalty != 0.0f) put("presence_penalty", presencePenalty.toDouble())
                 }
-
-                putTokenLimit(this, maxTokens)
-
-                if (effectiveEffort != null) {
-                    put("reasoning_effort", effectiveEffort)
-                }
-                if (requiresVerbosity()) {
-                    put("verbosity", verbosity ?: "medium")
-                }
-
-                put("stream", false)
             }
-            postProcessRequestJson(requestJson)
-            
-            val url = buildUrl("chat/completions")
-            val authHeader = buildAuthHeader()
-            
-            try {
-                val requestBuilder = Request.Builder()
-                    .url(url)
-                    .addHeader("Content-Type", "application/json")
-                    .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
-                
-                if (authHeader.first.isNotBlank()) {
-                    requestBuilder.addHeader(authHeader.first, authHeader.second)
+
+            putTokenLimit(this, maxTokens)
+
+            effectiveReasoningEffort()?.let { put("reasoning_effort", it) }
+            if (requiresVerbosity()) {
+                put("verbosity", verbosity ?: "medium")
+            }
+
+            put("stream", stream)
+            if (stream) {
+                put("stream_options", JSONObject().put("include_usage", true))
+            }
+        }
+        postProcessRequestJson(json)
+        return json
+    }
+
+    private fun buildJsonRequest(url: String, body: JSONObject): Request {
+        val authHeader = buildAuthHeader()
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+        if (authHeader.first.isNotBlank()) {
+            requestBuilder.addHeader(authHeader.first, authHeader.second)
+        }
+        return requestBuilder.build()
+    }
+
+    private fun chatViaChatCompletions(userMessage: String): String {
+        val requestJson = buildChatCompletionsBody(buildMessagesJson(userMessage), stream = false)
+        val request = buildJsonRequest(buildUrl("chat/completions"), requestJson)
+
+        return try {
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string()
+
+                if (response.isSuccessful && responseBody != null) {
+                    val json = JSONObject(responseBody)
+                    val choices = json.optJSONArray("choices")
+                    val messageObj = choices?.optJSONObject(0)?.optJSONObject("message")
+                    if (messageObj != null) onAssistantMessage(messageObj)
+                    val text = messageObj?.optString("content", "")?.trim()
+
+                    if (!text.isNullOrEmpty()) {
+                        val finalText = augmentResponseText(json, text)
+                        addToHistory(userMessage, finalText)
+                        Log.d(TAG, "Response received (${finalText.length} chars)")
+                        finalText
+                    } else {
+                        "Sorry, I couldn't generate a response."
+                    }
+                } else {
+                    val error = ProviderApiException.fromHttpStatus(response.code, responseBody)
+                    Log.e(TAG, "API error: ${error.kind} (${error.httpStatus})")
+                    error.message ?: "Sorry, the service is temporarily unavailable."
                 }
-                
-                Log.d(TAG, "Sending chat request to: $url")
-                
-                client.newCall(requestBuilder.build()).execute().use { response ->
-                    val responseBody = response.body?.string()
-                    
-                    if (response.isSuccessful && responseBody != null) {
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Chat error", e)
+            "Sorry, an error occurred: ${ProviderApiException.sanitize(e.message)}"
+        }
+    }
+
+    // ==================== OpenAI Responses API ====================
+
+    private fun buildResponsesInput(userMessage: String): JSONArray {
+        fun item(role: String, text: String): JSONObject {
+            val partType = if (role == "assistant") "output_text" else "input_text"
+            return JSONObject().apply {
+                put("role", role)
+                put("content", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("type", partType)
+                        put("text", text)
+                    })
+                })
+            }
+        }
+        return JSONArray().apply {
+            put(item("system", getFullSystemPrompt()))
+            for ((role, content) in conversationHistory.takeLast(6)) {
+                put(item(if (role == "assistant") "assistant" else "user", content))
+            }
+            put(item("user", userMessage))
+        }
+    }
+
+    private fun buildResponsesBody(input: JSONArray, stream: Boolean): JSONObject {
+        val p = policy
+        return JSONObject().apply {
+            put("model", modelId)
+            put("input", input)
+            put("stream", stream)
+            if (p.tokenLimitField != TokenLimitField.NONE) {
+                put("max_output_tokens", maxTokens)
+            }
+            if (!isSamplingLocked()) {
+                put("temperature", temperature.toDouble())
+                put("top_p", topP.toDouble())
+            }
+            effectiveReasoningEffort()?.let {
+                put("reasoning", JSONObject().put("effort", it))
+            }
+            if (requiresVerbosity()) {
+                put("text", JSONObject().put("verbosity", verbosity ?: "medium"))
+            }
+        }
+    }
+
+    /**
+     * @return the response text, or null when the endpoint rejected the request
+     *   with 400/404/422 (caller falls back to Chat Completions)
+     */
+    private fun chatViaResponses(userMessage: String, streaming: Boolean): String? {
+        val body = buildResponsesBody(buildResponsesInput(userMessage), stream = streaming)
+        val request = buildJsonRequest(buildUrl("responses"), body)
+
+        return try {
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string()
+                when {
+                    response.code == 400 || response.code == 404 || response.code == 422 -> {
+                        Log.w(TAG, "Responses API rejected (${response.code}); falling back to Chat Completions")
+                        null
+                    }
+                    response.isSuccessful && responseBody != null -> {
                         val json = JSONObject(responseBody)
-                        val choices = json.optJSONArray("choices")
-                        val messageObj = choices?.optJSONObject(0)?.optJSONObject("message")
-                        if (messageObj != null) onAssistantMessage(messageObj)
-                        val text = messageObj?.optString("content", "")?.trim()
-                        
+                        val text = extractResponsesText(json)
                         if (!text.isNullOrEmpty()) {
                             addToHistory(userMessage, text)
-                            Log.d(TAG, "Response: $text")
                             text
                         } else {
                             "Sorry, I couldn't generate a response."
                         }
-                    } else {
-                        Log.e(TAG, "API error: ${response.code}, body: $responseBody")
-                        parseErrorMessage(responseBody) ?: "Sorry, the service is temporarily unavailable."
+                    }
+                    else -> {
+                        val error = ProviderApiException.fromHttpStatus(response.code, responseBody)
+                        Log.e(TAG, "Responses API error: ${error.kind}")
+                        error.message
                     }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Chat error", e)
-                "Sorry, an error occurred: ${e.message}"
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Responses API error", e)
+            "Sorry, an error occurred: ${ProviderApiException.sanitize(e.message)}"
         }
     }
-    
-    /**
-     * Image Analysis - Using vision-capable models
-     */
+
+    private fun extractResponsesText(json: JSONObject): String? {
+        val output = json.optJSONArray("output") ?: return null
+        val sb = StringBuilder()
+        for (i in 0 until output.length()) {
+            val item = output.optJSONObject(i) ?: continue
+            if (item.optString("type") != "message") continue
+            val content = item.optJSONArray("content") ?: continue
+            for (j in 0 until content.length()) {
+                val part = content.optJSONObject(j) ?: continue
+                if (part.optString("type") == "output_text") {
+                    sb.append(part.optString("text"))
+                }
+            }
+        }
+        return sb.toString().trim().takeIf { it.isNotEmpty() }
+    }
+
+    // ==================== Streaming ====================
+
+    override fun streamChat(userMessage: String): Flow<AiStreamEvent> = channelFlow {
+        val p = policy
+        if (!p.streaming) {
+            val text = chat(userMessage)
+            trySend(AiStreamEvent.TextDelta(text))
+            trySend(AiStreamEvent.Completed(text))
+            close()
+            awaitClose { }
+            return@channelFlow
+        }
+
+        val (url, body) = if (useResponsesApi) {
+            buildUrl("responses") to buildResponsesBody(buildResponsesInput(userMessage), stream = true)
+        } else {
+            buildUrl("chat/completions") to buildChatCompletionsBody(buildMessagesJson(userMessage), stream = true)
+        }
+        val request = buildJsonRequest(url, body)
+        val call = client.newCall(request)
+
+        val fullText = StringBuilder()
+        var usage: AiStreamEvent.Usage? = null
+        var failed = false
+        val emittedCitations = mutableSetOf<String>()
+
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) {
+                    failed = true
+                    val error = ProviderApiException.fromHttpStatus(
+                        response.code,
+                        response.body?.string(),
+                        response.header("Retry-After")
+                    )
+                    trySend(AiStreamEvent.Error(error.kind, error.message ?: "Provider error", error.httpStatus))
+                    return@use
+                }
+                val source = response.body?.source() ?: return@use
+                SseParser.readEvents(source) { event ->
+                    when (event) {
+                        is SseParser.SseEvent.Done -> Unit
+                        is SseParser.SseEvent.Data -> {
+                            val parsed = parseStreamPayload(
+                                event.payload, fullText, emittedCitations
+                            )
+                            parsed.usage?.let { usage = it }
+                            parsed.events.forEach { trySend(it) }
+                        }
+                    }
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failed = true
+            trySend(
+                AiStreamEvent.Error(
+                    ProviderErrorKind.NETWORK_UNAVAILABLE,
+                    ProviderApiException.sanitize(e.message)
+                )
+            )
+        } finally {
+            if (!failed) {
+                val text = fullText.toString()
+                if (text.isNotEmpty()) addToHistory(userMessage, text)
+                trySend(AiStreamEvent.Completed(text, usage))
+            }
+            close()
+        }
+        // Cancels the in-flight OkHttp call when the collector is cancelled
+        // (and runs harmlessly after normal completion).
+        awaitClose { call.cancel() }
+    }.flowOn(Dispatchers.IO)
+
+    private class StreamParseResult(
+        val events: List<AiStreamEvent>,
+        val usage: AiStreamEvent.Usage?
+    )
+
+    /** Parse one SSE payload from either Chat Completions or Responses streams. */
+    private fun parseStreamPayload(
+        payload: String,
+        fullText: StringBuilder,
+        emittedCitations: MutableSet<String>
+    ): StreamParseResult {
+        val events = mutableListOf<AiStreamEvent>()
+        var usage: AiStreamEvent.Usage? = null
+        try {
+            val json = JSONObject(payload)
+
+            // ---------- Responses API events ----------
+            when (json.optString("type")) {
+                "response.output_text.delta" -> {
+                    val delta = json.optString("delta")
+                    if (delta.isNotEmpty()) {
+                        fullText.append(delta)
+                        events += AiStreamEvent.TextDelta(delta)
+                    }
+                    return StreamParseResult(events, null)
+                }
+                "response.reasoning_summary_text.delta", "response.reasoning_text.delta" -> {
+                    // Never surface reasoning text; only report the state.
+                    events += AiStreamEvent.Thinking
+                    return StreamParseResult(events, null)
+                }
+                "response.completed" -> {
+                    usage = json.optJSONObject("response")?.optJSONObject("usage")?.let { u ->
+                        AiStreamEvent.Usage(
+                            u.optLong("input_tokens").takeIf { it > 0 },
+                            u.optLong("output_tokens").takeIf { it > 0 }
+                        )
+                    }
+                    return StreamParseResult(events, usage)
+                }
+                "response.failed" -> {
+                    val msg = json.optJSONObject("response")?.optJSONObject("error")?.optString("message")
+                    events += AiStreamEvent.Error(
+                        ProviderErrorKind.UNKNOWN,
+                        ProviderApiException.sanitize(msg)
+                    )
+                    return StreamParseResult(events, null)
+                }
+                "response.output_item.done" -> {
+                    val item = json.optJSONObject("item")
+                    if (item != null && item.optString("type") == "function_call") {
+                        events += AiStreamEvent.ToolCallDelta(
+                            id = item.optString("call_id").ifBlank { null },
+                            name = item.optString("name").ifBlank { null },
+                            argumentsDelta = item.optString("arguments").ifBlank { null }
+                        )
+                    }
+                    return StreamParseResult(events, null)
+                }
+            }
+
+            // ---------- Chat Completions chunks ----------
+            val choices = json.optJSONArray("choices")
+            if (choices != null && choices.length() > 0) {
+                val choice = choices.optJSONObject(0)
+                val delta = choice?.optJSONObject("delta")
+                if (delta != null) {
+                    val content = delta.optString("content", "")
+                    if (content.isNotEmpty()) {
+                        fullText.append(content)
+                        events += AiStreamEvent.TextDelta(content)
+                    }
+                    if (delta.has("reasoning_content")) {
+                        // DeepSeek-style reasoning side channel: never surfaced.
+                        events += AiStreamEvent.Thinking
+                    }
+                    delta.optJSONArray("tool_calls")?.let { toolCalls ->
+                        for (i in 0 until toolCalls.length()) {
+                            val tc = toolCalls.optJSONObject(i) ?: continue
+                            val fn = tc.optJSONObject("function")
+                            events += AiStreamEvent.ToolCallDelta(
+                                id = tc.optString("id").ifBlank { null },
+                                name = fn?.optString("name")?.ifBlank { null },
+                                argumentsDelta = fn?.optString("arguments")?.ifBlank { null }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Usage arrives on the final chunk when include_usage is set.
+            json.optJSONObject("usage")?.let { u ->
+                val input = u.optLong("prompt_tokens", u.optLong("input_tokens", 0))
+                val output = u.optLong("completion_tokens", u.optLong("output_tokens", 0))
+                if (input > 0 || output > 0) {
+                    usage = AiStreamEvent.Usage(
+                        input.takeIf { it > 0 },
+                        output.takeIf { it > 0 }
+                    )
+                }
+            }
+
+            // Perplexity Sonar: citations / search_results are typed metadata.
+            json.optJSONArray("citations")?.let { citations ->
+                for (i in 0 until citations.length()) {
+                    val url = citations.optString(i)
+                    if (!url.isNullOrBlank() && emittedCitations.add(url)) {
+                        events += AiStreamEvent.Citation(url)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Malformed event: skip it, never kill the stream.
+            Log.w(TAG, "Skipping malformed stream event")
+        }
+        return StreamParseResult(events, usage)
+    }
+
+    // ==================== Image analysis ====================
+
     override suspend fun analyzeImage(imageData: ByteArray, prompt: String): String {
         return withContext(Dispatchers.IO) {
-            if (!providerType.supportsVision) {
+            val capabilities = ModelCapabilityResolver.resolve(providerType, modelId)
+            if (!capabilities.imageInput || policy.imageContentFormat == ImageContentFormat.NONE) {
                 return@withContext "This provider does not support image analysis."
             }
 
-            Log.d(TAG, "Analyzing image with $providerType")
+            val prepared = try {
+                ImagePayloadHelper.prepare(imageData)
+            } catch (e: ProviderImageException) {
+                return@withContext "Image analysis error: ${e.message}"
+            }
 
-            val messages = buildVisionMessages(imageData, prompt)
-            val requestJson = buildVisionRequest(messages)
+            Log.d(TAG, "Analyzing image with $providerType (mime=${prepared.mimeType})")
 
-            try {
-                val request = buildVisionHttpRequest(requestJson)
-                client.newCall(request).execute().use { response ->
-                    extractVisionResponse(response)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Vision error", e)
-                "Image analysis error: ${e.message}"
+            if (useResponsesApi) {
+                analyzeImageViaResponses(prepared, prompt)
+                    ?: analyzeImageViaChatCompletions(prepared, prompt)
+            } else {
+                analyzeImageViaChatCompletions(prepared, prompt)
             }
         }
     }
 
-    private fun buildVisionMessages(imageData: ByteArray, prompt: String): JSONArray {
-        val base64Image = android.util.Base64.encodeToString(imageData, android.util.Base64.NO_WRAP)
+    private fun buildVisionMessages(prepared: ImagePayloadHelper.PreparedImage, prompt: String): JSONArray {
+        val base64Image = android.util.Base64.encodeToString(prepared.data, android.util.Base64.NO_WRAP)
         val imageContent = JSONArray().apply {
             put(JSONObject().apply {
                 put("type", "text")
@@ -371,7 +681,7 @@ open class OpenAiCompatibleService(
             put(JSONObject().apply {
                 put("type", "image_url")
                 put("image_url", JSONObject().apply {
-                    put("url", "data:image/jpeg;base64,$base64Image")
+                    put("url", "data:${prepared.mimeType};base64,$base64Image")
                 })
             })
         }
@@ -383,43 +693,74 @@ open class OpenAiCompatibleService(
         }
     }
 
-    private fun buildVisionRequest(messages: JSONArray): JSONObject {
-        val effectiveEffort: String? = if (requiresReasoningEffort()) {
-            reasoningEffort ?: "minimal"
-        } else {
-            null
-        }
-        val samplingLocked = isSamplingLocked(effectiveEffort)
-
-        return JSONObject().apply {
+    private fun analyzeImageViaChatCompletions(
+        prepared: ImagePayloadHelper.PreparedImage,
+        prompt: String
+    ): String {
+        val messages = buildVisionMessages(prepared, prompt)
+        val requestJson = JSONObject().apply {
             put("model", modelId)
             put("messages", messages)
             putTokenLimit(this, maxTokens.coerceAtMost(4096))
-            if (!samplingLocked) {
+            if (!isSamplingLocked()) {
                 put("temperature", temperature.toDouble())
             }
-            if (effectiveEffort != null) {
-                put("reasoning_effort", effectiveEffort)
-            }
+            effectiveReasoningEffort()?.let { put("reasoning_effort", it) }
             if (requiresVerbosity()) {
                 put("verbosity", verbosity ?: "medium")
             }
         }
+        postProcessRequestJson(requestJson)
+
+        return try {
+            val request = buildJsonRequest(buildUrl("chat/completions"), requestJson)
+            client.newCall(request).execute().use { response ->
+                extractVisionResponse(response)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Vision error", e)
+            "Image analysis error: ${ProviderApiException.sanitize(e.message)}"
+        }
     }
 
-    private fun buildVisionHttpRequest(requestJson: JSONObject): Request {
-        val url = buildUrl("chat/completions")
-        val authHeader = buildAuthHeader()
-
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .addHeader("Content-Type", "application/json")
-            .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
-
-        if (authHeader.first.isNotBlank()) {
-            requestBuilder.addHeader(authHeader.first, authHeader.second)
+    private fun analyzeImageViaResponses(
+        prepared: ImagePayloadHelper.PreparedImage,
+        prompt: String
+    ): String? {
+        val base64Image = android.util.Base64.encodeToString(prepared.data, android.util.Base64.NO_WRAP)
+        val input = JSONArray().apply {
+            put(JSONObject().apply {
+                put("role", "user")
+                put("content", JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("type", "input_text")
+                        put("text", prompt)
+                    })
+                    put(JSONObject().apply {
+                        put("type", "input_image")
+                        put("image_url", "data:${prepared.mimeType};base64,$base64Image")
+                    })
+                })
+            })
         }
-        return requestBuilder.build()
+        val body = buildResponsesBody(input, stream = false)
+        val request = buildJsonRequest(buildUrl("responses"), body)
+        return try {
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string()
+                when {
+                    response.code == 400 || response.code == 404 || response.code == 422 -> null
+                    response.isSuccessful && responseBody != null ->
+                        extractResponsesText(JSONObject(responseBody)) ?: "Unable to analyze image."
+                    else -> {
+                        Log.e(TAG, "Responses vision error: ${response.code}")
+                        "Image analysis failed."
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            "Image analysis error: ${ProviderApiException.sanitize(e.message)}"
+        }
     }
 
     private fun extractVisionResponse(response: okhttp3.Response): String {
@@ -435,27 +776,26 @@ open class OpenAiCompatibleService(
             ?.optString("content", "")?.trim()
             ?: "Unable to analyze image."
     }
-    
-    /**
-     * Test Connection - Verify API connectivity
-     */
+
+    // ==================== Connection test ====================
+
     suspend fun testConnection(): Result<String> {
         return withContext(Dispatchers.IO) {
             try {
                 Log.d(TAG, "Testing connection to: $baseUrl")
-                
+
                 // Try to list models (most providers support this)
                 val modelsUrl = buildUrl("models")
                 val authHeader = buildAuthHeader()
-                
+
                 val requestBuilder = Request.Builder()
                     .url(modelsUrl)
                     .get()
-                
+
                 if (authHeader.first.isNotBlank()) {
                     requestBuilder.addHeader(authHeader.first, authHeader.second)
                 }
-                
+
                 client.newCall(requestBuilder.build()).execute().use { response ->
                     if (response.isSuccessful) {
                         val responseBody = response.body?.string()
@@ -478,7 +818,7 @@ open class OpenAiCompatibleService(
             }
         }
     }
-    
+
     private suspend fun testWithSimpleChat(): Result<String> {
         return withContext(Dispatchers.IO) {
             try {
@@ -488,26 +828,16 @@ open class OpenAiCompatibleService(
                         put("content", "Hello")
                     })
                 }
-                
+
                 val requestJson = JSONObject().apply {
                     put("model", modelId)
                     put("messages", messages)
                     putTokenLimit(this, 10)
                 }
-                
-                val url = buildUrl("chat/completions")
-                val authHeader = buildAuthHeader()
-                
-                val requestBuilder = Request.Builder()
-                    .url(url)
-                    .addHeader("Content-Type", "application/json")
-                    .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
-                
-                if (authHeader.first.isNotBlank()) {
-                    requestBuilder.addHeader(authHeader.first, authHeader.second)
-                }
-                
-                client.newCall(requestBuilder.build()).execute().use { response ->
+
+                val request = buildJsonRequest(buildUrl("chat/completions"), requestJson)
+
+                client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
                         Result.success("Connected successfully!")
                     } else {
@@ -521,7 +851,7 @@ open class OpenAiCompatibleService(
             }
         }
     }
-    
+
     /**
      * Parse error message from API response
      */

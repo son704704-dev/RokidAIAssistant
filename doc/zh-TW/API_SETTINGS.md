@@ -12,14 +12,16 @@
 # 1. 複製範本
 cp local.properties.template local.properties
 
-# 2. 新增 Gemini API 金鑰（最低需求）
+# 2.（選用）新增任一服務商金鑰 — 沒有任何金鑰也能安裝並開啟 App。
+#    金鑰也可以之後在 App 內的設定畫面輸入。
 echo "GEMINI_API_KEY=your_key_here" >> local.properties
 
 # 3. 重新建置
 ./gradlew assembleDebug
 ```
 
-> 前往 [Google AI Studio](https://ai.google.dev/) 在 2 分鐘內取得免費的 Gemini API 金鑰。
+> 安裝 App 或開啟設定頁不需要任何 AI 金鑰。只有你實際選用的那一家服務商
+> 需要憑證（可在 App 內輸入，或寫在 `local.properties`）。
 
 ---
 
@@ -56,22 +58,63 @@ echo "GEMINI_API_KEY=your_key_here" >> local.properties
 
 ### 必要金鑰
 
-| 金鑰                  | 必要性      | 取得位置                                            |
-| --------------------- | ----------- | --------------------------------------------------- |
-| `GEMINI_API_KEY`      | ✅ 必要     | [Google AI Studio](https://ai.google.dev/)          |
-| `ROKID_CLIENT_SECRET` | ⚠️ 眼鏡需要 | Rokid 開發者入口                                    |
-| `OPENAI_API_KEY`      | 選用        | [OpenAI Platform](https://platform.openai.com/)     |
-| `ANTHROPIC_API_KEY`   | 選用        | [Anthropic Console](https://console.anthropic.com/) |
+| 金鑰                  | 必要性        | 取得位置                                            |
+| --------------------- | ------------- | --------------------------------------------------- |
+| `ROKID_CLIENT_SECRET` | ⚠️ 僅眼鏡需要 | Rokid 開發者入口                                    |
+| `GEMINI_API_KEY`      | 選用          | [Google AI Studio](https://ai.google.dev/)          |
+| `OPENAI_API_KEY`      | 選用          | [OpenAI Platform](https://platform.openai.com/)     |
+| `ANTHROPIC_API_KEY`   | 選用          | [Anthropic Console](https://console.anthropic.com/) |
 
-### 服務商比較
+> 只有你選用的服務商需要憑證。`local.properties` 中的建置期金鑰為選用；
+> App 內輸入的金鑰儲存於 Android Keystore 加密偏好設定（不會以明文儲存、
+> 不會寫入 Log）。
 
-| 服務商        | 視覺 | 串流 | 免費方案 | 延遲 |
-| ------------- | ---- | ---- | -------- | ---- |
-| **Gemini**    | ✅   | ✅   | ✅ 優惠  | 中等 |
-| **OpenAI**    | ✅   | ✅   | ❌       | 低   |
-| **Anthropic** | ✅   | ✅   | ❌       | 中等 |
-| **Groq**      | ✅   | ✅   | ✅ 有限  | 極低 |
-| **DeepSeek**  | ❌   | ✅   | ✅       | 中等 |
+### 服務商能力對照表
+
+最後驗證日期：**2026-08-02**。App 會從各家官方 Models API 動態載入模型清單；
+「代表性 fallback 模型」僅在 API 無法連線且無快取時使用。
+
+| 服務商      | 協定                     | 動態模型 | 視覺（依模型） | 串流   | STT endpoint | 即時語音 | 驗證方式            |
+| ----------- | ------------------------ | -------- | -------------- | ------ | ------------ | -------- | ------------------- |
+| Gemini      | generateContent（原生）  | ✅       | ✅             | ✅ SSE | ✅ 原生音訊  | ❌       | API key             |
+| OpenAI      | Responses API + Chat Completions 備援 | ✅ | ✅  | ✅ SSE | ✅ Whisper   | ❌       | Bearer key          |
+| Anthropic   | Messages（原生）         | ✅       | ✅             | ✅ SSE | ❌           | ❌       | x-api-key           |
+| DeepSeek    | Chat Completions         | ✅       | ❌             | ✅ SSE | ❌           | ❌       | Bearer key          |
+| Groq        | Chat Completions         | ✅       | ✅（特定模型） | ✅ SSE | ✅ Whisper   | ❌       | Bearer key          |
+| xAI         | Chat Completions         | ✅       | ✅（如 Grok 4.5） | ✅ SSE | ❌        | ❌       | Bearer key          |
+| 阿里雲      | Chat Completions         | ✅       | ✅（VL 模型）  | ✅ SSE | ❌           | ❌       | Bearer key + 區域   |
+| Z.AI（GLM） | Chat Completions         | ✅       | ✅（GLM-V）    | ✅ SSE | ❌           | ❌       | Bearer key          |
+| 百度        | Qianfan v2（+ legacy OAuth） | ✅   | ✅（VL 模型）  | ✅ SSE | ❌           | ❌       | Bearer key / 舊金鑰對 |
+| Perplexity  | Sonar Chat Completions   | ❌（fallback 清單） | ✅（Sonar） | ✅ SSE | ❌    | ❌       | Bearer key          |
+| Moonshot    | Chat Completions         | ✅       | ✅（Kimi 多模態） | ✅ SSE | ❌        | ❌       | Bearer key          |
+| Mistral     | Chat Completions         | ✅（解析能力 metadata） | ✅（特定模型） | ✅ SSE | ❌ | ❌  | Bearer key          |
+| Gemini Live | Live WebSocket           | ✅       | ✅             | ✅ WS  | ✅ 原生      | ✅       | API key             |
+| AnythingLLM | Workspace API            | ❌（依 workspace） | ⚠️ 未知  | ❌     | ❌           | ❌       | API key + URL       |
+| 自訂        | Chat Completions 或 Responses | ✅（視端點） | ⚠️ 手動覆寫 | ✅  | ❌           | ❌       | 選用 key            |
+
+> 視覺是「模型層級」能力：標示 ✅ 的服務商，其純文字模型仍會在送出前被拒絕
+> 圖片請求。部分服務商可能提供 trial/free quota — 請以官方 Console 為準，
+> 不保證永久存在。
+
+### 代表性 fallback 模型（2026-08-02 驗證）
+
+| 服務商     | Fallback 範例（未標註者為 stable）                                       |
+| ---------- | ------------------------------------------------------------------------ |
+| Gemini     | gemini-3.6-flash、gemini-3.5-flash(-lite)、gemini-2.5-pro/flash/lite     |
+| OpenAI     | gpt-5.6、gpt-5.6-terra、gpt-5.6-luna（gpt-5.4、gpt-4o 為 legacy）        |
+| Anthropic  | claude-sonnet-5、claude-opus-5、claude-fable-5、claude-opus-4-8、claude-haiku-4-5 |
+| DeepSeek   | deepseek-v4-flash、deepseek-v4-pro（deepseek-chat/reasoner 已 deprecated，自動 migration） |
+| Groq       | llama-3.3-70b-versatile、gpt-oss-120b/20b（Llama 4 Scout/Maverick 為 preview） |
+| xAI        | grok-4.5（視覺）、grok-4.1-fast、grok-4                                  |
+| 阿里雲     | qwen3.7-max/plus/flash、qwen2.5-vl-72b/32b（視覺）                       |
+| Z.AI       | glm-5.1、glm-5v-turbo（視覺）、glm-4.7-flash                             |
+| 百度       | ernie-5.1、ernie-5.0、ernie-4.5-turbo-128k、ernie-4.5-turbo-vl（視覺）   |
+| Perplexity | sonar、sonar-pro、sonar-reasoning-pro、sonar-deep-research               |
+| Moonshot   | kimi-k2.5、kimi-k2.5-thinking                                            |
+| Mistral    | mistral-medium-3-5、mistral-large-2512、mistral-small-2603、ministral-3-8b |
+
+> 帳號的 Models API 回傳結果永遠優先於此表。更新方式：查閱各家官方模型文件，
+> 修改 `ai/catalog/FallbackModelCatalog.kt`，並更新 `LAST_VERIFIED_DATE`。
 
 ---
 
@@ -79,22 +122,37 @@ echo "GEMINI_API_KEY=your_key_here" >> local.properties
 
 ### 支援的服務商
 
-| 服務商          | 模型                                        | 視覺   | 基礎 URL                                             |
-| --------------- | ------------------------------------------- | ------ | ---------------------------------------------------- |
-| **Gemini**      | Gemini 3.6 Flash, 3.1 Pro, 3 Flash, 2.5 Pro/Flash/Lite | ✅ | `https://generativelanguage.googleapis.com/v1beta/`  |
-| **OpenAI**      | GPT-5.6, 5.5/5.4/5.2/5.1, 5.2 Codex, 5 Mini/Nano, o3, o3 Pro | ✅ | `https://api.openai.com/v1/`                         |
-| **Anthropic**   | Claude Opus 5, Opus 4.7, Opus 4.6, Sonnet 4.6, Haiku 4.5 | ✅ | `https://api.anthropic.com/v1/`                      |
-| **DeepSeek**    | DeepSeek Chat, DeepSeek Reasoner            | ❌     | `https://api.deepseek.com/`                          |
-| **Groq**        | Llama 4 Scout/Maverick                      | ✅     | `https://api.groq.com/openai/v1/`                    |
-| **xAI**         | Grok 4.20, 4, 4.1 Fast, 3, 3 Mini           | ❌     | `https://api.x.ai/v1/`                               |
-| **阿里雲**      | Qwen 3.7 Flash, Qwen 3 Max, Qwen 2.5 VL 72B/32B/7B | ✅ | `https://dashscope.aliyuncs.com/compatible-mode/v1/` |
-| **智譜**        | GLM-5, GLM-4.7, GLM-4 Plus                  | ✅     | `https://api.z.ai/api/paas/v4/`                      |
-| **百度**        | ERNIE 4.0 8K, ERNIE 3.5 8K                  | ❌     | `https://aip.baidubce.com/rpc/2.0/...`               |
-| **Perplexity**  | Sonar, Sonar Pro, Sonar Reasoning Pro       | ❌     | `https://api.perplexity.ai/`                         |
-| **Moonshot**    | Kimi K3, Kimi K2.5, Moonshot V1 128K/32K/8K | ✅     | `https://api.moonshot.ai/v1/`                        |
-| **Mistral**     | Mistral Large、Medium 3.5、Ministral 3B      | ✅     | `https://api.mistral.ai/v1/`                         |
-| **Gemini Live** | Gemini Live（對話模式）                     | ✅     | `wss://generativelanguage.googleapis.com/ws/...`     |
-| **自訂**        | 使用者定義                                  | 視情況 | 使用者定義（如 Ollama, LM Studio）                   |
+各家模型清單由官方 API 動態載入（Live → 快取 → 驗證過的 fallback → 手動輸入）。
+基礎 URL：
+
+| 服務商          | 基礎 URL                                                             |
+| --------------- | -------------------------------------------------------------------- |
+| **Gemini**      | `https://generativelanguage.googleapis.com/v1beta/`                  |
+| **OpenAI**      | `https://api.openai.com/v1/`                                         |
+| **Anthropic**   | `https://api.anthropic.com/v1/`                                      |
+| **DeepSeek**    | `https://api.deepseek.com/`                                          |
+| **Groq**        | `https://api.groq.com/openai/v1/`                                    |
+| **xAI**         | `https://api.x.ai/v1/`                                               |
+| **阿里雲**      | 區域端點（中國 / 新加坡 / 美國 / 德國 / 日本 / 自訂 workspace URL）  |
+| **智譜**        | `https://api.z.ai/api/paas/v4/`                                      |
+| **百度**        | `https://qianfan.baidubce.com/v2/`（舊 RPC 保留作 migration）        |
+| **Perplexity**  | `https://api.perplexity.ai/`（Sonar）                                |
+| **Moonshot**    | `https://api.moonshot.ai/v1/`                                        |
+| **Mistral**     | `https://api.mistral.ai/v1/`                                         |
+| **Gemini Live** | `wss://generativelanguage.googleapis.com/ws/...`                     |
+| **AnythingLLM** | 使用者定義 server URL                                                |
+| **自訂**        | 使用者定義（Ollama、LM Studio、vLLM...）                             |
+
+### 模型目錄（四層）
+
+1. **Live** — 使用你的金鑰從服務商 Models API 取得。
+2. **Cached** — 上次成功結果，24 小時內重用（網路失敗時延長使用）。
+3. **Fallback** — 經驗證的靜態清單（2026-08-02），不含 TTS／圖片生成／轉錄模型。
+4. **Manual** — 隨時可手動輸入模型 ID；手動選擇永不會被刪除，即使不在遠端
+   清單中（改為顯示警告）。
+
+每家服務商各自記住上次選擇的模型：切換 OpenAI → Gemini → OpenAI 會恢復你
+先前選擇的 OpenAI 模型。
 
 ### 取得 API 金鑰
 
@@ -136,11 +194,16 @@ echo "GEMINI_API_KEY=your_key_here" >> local.properties
 
 ### 內建 AI 服務商 STT
 
-| 服務商 | 方式              | 串流 |
-| ------ | ----------------- | ---- |
-| Gemini | 原生多模態        | ❌   |
-| OpenAI | Whisper API       | ❌   |
-| Groq   | Whisper（加速版） | ❌   |
+STT 與聊天服務商解耦。只有具備實際轉錄 endpoint 的服務商可執行語音轉文字：
+
+| 服務商 | 方式                          | 備註                     |
+| ------ | ----------------------------- | ------------------------ |
+| Gemini | 原生多模態音訊                | 使用所選 Gemini 聊天模型 |
+| OpenAI | Whisper `/audio/transcriptions` | 獨立轉錄模型           |
+| Groq   | Whisper（加速版）             | `whisper-large-v3-turbo` |
+
+> 「OpenAI 相容」不代表有可用的轉錄 endpoint — xAI、DeepSeek、阿里雲、智譜、
+> Moonshot、Mistral、Perplexity、百度等聊天服務商不會收到 STT 請求。
 
 ### 專用 STT 服務商
 
@@ -228,14 +291,29 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
 其他 API 金鑰可在應用的**設定**畫面中配置：
 
-| 設定         | 應用內位置           | 用途                           |
-| ------------ | -------------------- | ------------------------------ |
-| AI 服務商    | 設定 → AI Provider   | 選擇 Gemini/OpenAI 等          |
-| 模型         | 設定 → Model         | 選擇特定模型                   |
-| 自訂端點     | 設定 → Custom        | 用於 Ollama/LM Studio          |
-| STT 服務商   | 設定 → Speech        | 設定 STT                       |
-| 系統提示詞   | 設定 → System Prompt | 自訂 AI 行為                   |
-| 自動分析錄音 | 設定 → 錄音設定      | 錄音結束後自動傳送 AI 進行辨識 |
+| 設定         | 應用內位置              | 用途                                                      |
+| ------------ | ----------------------- | --------------------------------------------------------- |
+| AI 服務商    | 設定 → AI Provider      | 選擇服務商（顯示協定與是否已設定憑證）                    |
+| 模型         | 設定 → Model            | 搜尋／重新整理目錄、來源標籤（Live/Cached/Fallback）、能力標籤、手動模型 ID |
+| API 金鑰     | 設定 → API Keys         | 僅要求目前所選服務商的憑證                                |
+| 百度驗證     | 設定 → API Keys（百度） | Qianfan v2 金鑰，或舊 API Key + Secret Key 切換開關       |
+| 阿里雲區域   | 設定 → API Keys（阿里雲）| 中國 / 新加坡 / 美國 / 德國 / 日本 / 自訂 workspace URL   |
+| 自訂端點     | 設定 → Custom           | Base URL、模型 ID、選用金鑰、models 路徑、Chat Completions/Responses 協定（HTTP 明文警告） |
+| STT 服務商   | 設定 → Speech           | 設定 STT                                                  |
+| 系統提示詞   | 設定 → System Prompt    | 自訂 AI 行為                                              |
+| 自動分析錄音 | 設定 → 錄音設定         | 錄音結束後自動傳送 AI 進行辨識                            |
+
+### 百度 migration
+
+新設定使用單一 **Qianfan v2 API 金鑰**（Bearer）。只持有舊 API Key +
+Secret Key 的既有安裝會自動以 legacy 模式繼續運作 — 舊憑證不會被刪除，
+也可以用「Legacy authentication」開關明確切換。
+
+### DeepSeek migration
+
+已儲存的舊 `deepseek-chat` / `deepseek-reasoner` 模型 ID 會自動遷移到
+`deepseek-v4-flash` / `deepseek-v4-pro`。仍可手動輸入舊 ID（會顯示
+deprecated 警告）。
 
 **檔案路徑**: `phone-app/src/.../ui/settings/SettingsScreen.kt`
 
@@ -272,9 +350,10 @@ A: 金鑰在建置時嵌入。變更金鑰後重新建置 release:
 **Q: Gemini 回傳「quota exceeded」**
 
 ```
-A: 免費方案有限制。選項:
-   1. 等待配額重置（每日）
-   2. 升級到付費方案
+A: 配額取決於你的 Google AI 方案（可能有 trial/free quota — 請以官方
+   Console 為準，不保證永久存在）。選項:
+   1. 等待配額重置
+   2. 升級方案
    3. 暫時切換到其他服務商
 ```
 
@@ -282,7 +361,7 @@ A: 免費方案有限制。選項:
 
 ```
 A: 1. 檢查 API 金鑰是否有效
-   2. 確認已設定帳單（無免費方案）
+   2. 確認帳號已設定帳單
    3. 驗證金鑰有正確權限
 ```
 

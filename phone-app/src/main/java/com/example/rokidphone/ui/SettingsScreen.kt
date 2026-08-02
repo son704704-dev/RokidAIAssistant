@@ -54,6 +54,12 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val catalogRepository = remember {
+        com.example.rokidphone.ai.catalog.ModelCatalogRepository(
+            remote = com.example.rokidphone.ai.catalog.RemoteModelCatalogSource(),
+            cache = com.example.rokidphone.ai.catalog.SharedPrefsModelCatalogCache(context.applicationContext)
+        )
+    }
     var showProviderDialog by remember { mutableStateOf(false) }
     var showModelDialog by remember { mutableStateOf(false) }
     var showSpeechServiceDialog by remember { mutableStateOf(false) }
@@ -84,6 +90,35 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Secure storage failure warning (never silently falls back to plaintext)
+            item {
+                val secureStorageError by SettingsRepository.getInstance(context)
+                    .secureStorageError.collectAsState()
+                secureStorageError?.let { errorText ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(text = errorText)
+                        }
+                    }
+                }
+            }
+
             // Language settings section
             item {
                 SettingsSection(title = stringResource(R.string.language_settings)) {
@@ -107,14 +142,15 @@ fun SettingsScreen(
                     
                     HorizontalDivider()
                     
-                    // Model selection
-                    val currentModel = AvailableModels.findModel(settings.aiModelId)
+                    // Model selection (per-provider memory; live/cache/fallback/manual catalog)
+                    val selectedModelId = settings.getCurrentModelId()
+                    val currentModel = AvailableModels.findModel(selectedModelId)
                     SettingsRow(
                         title = stringResource(R.string.ai_model),
-                        subtitle = if (settings.aiProvider == AiProvider.CUSTOM) 
+                        subtitle = if (settings.aiProvider == AiProvider.CUSTOM)
                             settings.customModelName.ifBlank { "custom" }
-                        else 
-                            currentModel?.displayName ?: settings.aiModelId,
+                        else
+                            currentModel?.displayName ?: selectedModelId,
                         onClick = { showModelDialog = true }
                     )
                 }
@@ -130,7 +166,11 @@ fun SettingsScreen(
                         onModelNameChange = { onSettingsChange(settings.copy(customModelName = it)) },
                         apiKey = settings.customApiKey,
                         onApiKeyChange = { onSettingsChange(settings.copy(customApiKey = it)) },
-                        onTestConnection = { onTestConnection(settings) }
+                        onTestConnection = { onTestConnection(settings) },
+                        protocol = settings.customProtocol,
+                        onProtocolChange = { onSettingsChange(settings.copy(customProtocol = it)) },
+                        modelsPath = settings.customModelsPath,
+                        onModelsPathChange = { onSettingsChange(settings.copy(customModelsPath = it)) }
                     )
                 }
             }
@@ -209,6 +249,55 @@ fun SettingsScreen(
                                     onValueChange = { onSettingsChange(settings.copy(alibabaApiKey = it)) },
                                     isActive = true
                                 )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "Region",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    AlibabaRegions.all.take(3).forEach { region ->
+                                        FilterChip(
+                                            selected = settings.alibabaRegion == region,
+                                            onClick = { onSettingsChange(settings.copy(alibabaRegion = region)) },
+                                            label = { Text(region.replaceFirstChar { it.uppercase() }) }
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    AlibabaRegions.all.drop(3).forEach { region ->
+                                        FilterChip(
+                                            selected = settings.alibabaRegion == region,
+                                            onClick = { onSettingsChange(settings.copy(alibabaRegion = region)) },
+                                            label = { Text(region.replaceFirstChar { it.uppercase() }) }
+                                        )
+                                    }
+                                }
+                                if (settings.alibabaRegion == AlibabaRegions.CUSTOM) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    OutlinedTextField(
+                                        value = settings.alibabaCustomBaseUrl,
+                                        onValueChange = { onSettingsChange(settings.copy(alibabaCustomBaseUrl = it)) },
+                                        label = { Text("Workspace base URL") },
+                                        placeholder = { Text("https://.../compatible-mode/v1/") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = settings.getCurrentBaseUrl(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                             AiProvider.ZHIPU -> {
                                 ApiKeyField(
@@ -219,20 +308,36 @@ fun SettingsScreen(
                                 )
                             }
                             AiProvider.BAIDU -> {
-                                // Baidu requires both API Key and Secret Key
+                                // Qianfan v2: single bearer API key (preferred)
                                 ApiKeyField(
-                                    label = stringResource(R.string.baidu_api_key),
-                                    value = settings.baiduApiKey,
-                                    onValueChange = { onSettingsChange(settings.copy(baiduApiKey = it)) },
-                                    isActive = true
+                                    label = "Qianfan API Key (v2, recommended)",
+                                    value = settings.baiduQianfanApiKey,
+                                    onValueChange = { onSettingsChange(settings.copy(baiduQianfanApiKey = it)) },
+                                    isActive = !settings.isBaiduLegacyMode()
                                 )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                ApiKeyField(
-                                    label = stringResource(R.string.baidu_secret_key),
-                                    value = settings.baiduSecretKey,
-                                    onValueChange = { onSettingsChange(settings.copy(baiduSecretKey = it)) },
-                                    isActive = true
+                                Spacer(modifier = Modifier.height(8.dp))
+                                SettingsRowWithSwitch(
+                                    title = "Legacy authentication",
+                                    subtitle = "Use API Key + Secret Key OAuth (older Qianfan apps)",
+                                    checked = settings.isBaiduLegacyMode(),
+                                    onCheckedChange = { onSettingsChange(settings.copy(baiduUseLegacyAuth = it)) }
                                 )
+                                if (settings.isBaiduLegacyMode()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    ApiKeyField(
+                                        label = stringResource(R.string.baidu_api_key),
+                                        value = settings.baiduApiKey,
+                                        onValueChange = { onSettingsChange(settings.copy(baiduApiKey = it)) },
+                                        isActive = true
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    ApiKeyField(
+                                        label = stringResource(R.string.baidu_secret_key),
+                                        value = settings.baiduSecretKey,
+                                        onValueChange = { onSettingsChange(settings.copy(baiduSecretKey = it)) },
+                                        isActive = true
+                                    )
+                                }
                             }
                             AiProvider.PERPLEXITY -> {
                                 ApiKeyField(
@@ -411,23 +516,31 @@ fun SettingsScreen(
         ProviderSelectionDialog(
             currentProvider = settings.aiProvider,
             onSelect = { provider ->
+                // Restore the model the user last picked for this provider.
                 onSettingsChange(settings.copy(
                     aiProvider = provider,
-                    aiModelId = AvailableModels.getModelsForProvider(provider).firstOrNull()?.id 
-                        ?: settings.aiModelId
+                    aiModelId = settings.getModelIdForProvider(provider)
                 ))
                 showProviderDialog = false
             },
-            onDismiss = { showProviderDialog = false }
+            onDismiss = { showProviderDialog = false },
+            isConfigured = { settings.isProviderConfigured(it) }
         )
     }
-    
+
     if (showModelDialog) {
-        ModelSelectionDialog(
-            currentModelId = settings.aiModelId,
-            models = AvailableModels.getModelsForProvider(settings.aiProvider),
+        ModelCatalogDialog(
+            provider = settings.aiProvider,
+            currentModelId = settings.getCurrentModelId(),
+            apiKey = settings.getCurrentApiKey(),
+            baseUrl = when (settings.aiProvider) {
+                AiProvider.CUSTOM -> settings.customBaseUrl
+                AiProvider.ALIBABA -> settings.getCurrentBaseUrl()
+                else -> null
+            },
+            repository = catalogRepository,
             onSelect = { modelId ->
-                onSettingsChange(settings.copy(aiModelId = modelId))
+                onSettingsChange(settings.withModelForProvider(settings.aiProvider, modelId))
                 showModelDialog = false
             },
             onDismiss = { showModelDialog = false }
@@ -700,7 +813,8 @@ fun ApiKeyField(
 fun ProviderSelectionDialog(
     currentProvider: AiProvider,
     onSelect: (AiProvider) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    isConfigured: (AiProvider) -> Boolean = { false }
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -712,6 +826,7 @@ fun ProviderSelectionDialog(
                     .heightIn(max = 480.dp)
             ) {
                 items(AiProvider.entries.toList(), key = { it.name }) { provider ->
+                    val descriptor = com.example.rokidphone.ai.catalog.ProviderRegistry.descriptorFor(provider)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -724,7 +839,186 @@ fun ProviderSelectionDialog(
                             onClick = { onSelect(provider) }
                         )
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text(stringResource(provider.displayNameResId))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(stringResource(provider.displayNameResId))
+                                if (isConfigured(provider)) {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = "Configured",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = descriptor.protocol.name.replace('_', ' ').lowercase()
+                                    .replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+/**
+ * Catalog-driven model picker.
+ *
+ * Shows the four-tier catalog (live → cache → fallback → manual) with search,
+ * refresh, source/status/capability labels and a manual model-ID entry.
+ * The current selection is never removed even when missing from the list.
+ */
+@Composable
+fun ModelCatalogDialog(
+    provider: AiProvider,
+    currentModelId: String,
+    apiKey: String,
+    baseUrl: String?,
+    repository: com.example.rokidphone.ai.catalog.ModelCatalogRepository,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val coroutineScope = rememberCoroutineScope()
+    var snapshot by remember(provider) {
+        mutableStateOf(repository.getCachedOrFallback(provider))
+    }
+    var isLoading by remember(provider) { mutableStateOf(false) }
+    var searchQuery by remember(provider) { mutableStateOf("") }
+    var manualModelId by remember(provider) { mutableStateOf("") }
+
+    fun refresh(force: Boolean) {
+        coroutineScope.launch {
+            isLoading = true
+            try {
+                snapshot = repository.getCatalog(
+                    provider = provider,
+                    apiKey = apiKey,
+                    baseUrl = baseUrl,
+                    forceRefresh = force
+                )
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    // Initial load: serve cache/fallback instantly, then try a live refresh.
+    LaunchedEffect(provider) {
+        if (apiKey.isNotBlank()) refresh(force = false)
+    }
+
+    val selectionWarning = repository.selectionWarning(snapshot, currentModelId)
+    val filteredModels = remember(snapshot, searchQuery) {
+        if (searchQuery.isBlank()) snapshot.models
+        else snapshot.models.filter {
+            it.id.contains(searchQuery, ignoreCase = true) ||
+                it.displayName.contains(searchQuery, ignoreCase = true)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.select_model), modifier = Modifier.weight(1f))
+                if (isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                } else {
+                    IconButton(onClick = { refresh(force = true) }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh models")
+                    }
+                }
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Catalog source + verification info
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SourceChip(snapshot.source)
+                    snapshot.remoteError?.let {
+                        Text(
+                            text = "Remote unavailable",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
+                selectionWarning?.let {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("Search models") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                ) {
+                    items(filteredModels, key = { it.id }) { model ->
+                        ModelCatalogRow(
+                            model = model,
+                            isSelected = model.id == currentModelId,
+                            onSelect = onSelect
+                        )
+                    }
+                    if (filteredModels.isEmpty()) {
+                        item {
+                            Text(
+                                text = "No models match \"$searchQuery\"",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Manual model ID entry — always available, never blocked by the catalog.
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = manualModelId,
+                        onValueChange = { manualModelId = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text("Custom model ID") }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    TextButton(
+                        onClick = { if (manualModelId.isNotBlank()) onSelect(manualModelId.trim()) },
+                        enabled = manualModelId.isNotBlank()
+                    ) {
+                        Text("Use")
                     }
                 }
             }
@@ -738,87 +1032,115 @@ fun ProviderSelectionDialog(
 }
 
 @Composable
-fun ModelSelectionDialog(
-    currentModelId: String,
-    models: List<ModelOption>,
-    onSelect: (String) -> Unit,
-    onDismiss: () -> Unit
+private fun ModelCatalogRow(
+    model: com.example.rokidphone.ai.catalog.ModelInfo,
+    isSelected: Boolean,
+    onSelect: (String) -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.select_model)) },
-        text = {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 480.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onSelect(model.id) }
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = isSelected, onClick = { onSelect(model.id) })
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(model.displayName)
+                Spacer(modifier = Modifier.width(8.dp))
+                StatusChip(model.status)
+            }
+            if (model.description.isNotBlank()) {
+                Text(
+                    text = model.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            model.capabilities.maxContextTokens?.let { tokens ->
+                Text(
+                    text = "Context: ${tokens / 1000}K tokens",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            // Only the capabilities the model actually supports.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(top = 4.dp)
             ) {
-                items(models, key = { it.id }) { model ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelect(model.id) }
-                            .padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = model.id == currentModelId,
-                            onClick = { onSelect(model.id) }
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(model.displayName)
-                            Text(
-                                text = model.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            // Show capability badges
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.padding(top = 4.dp)
-                            ) {
-                                if (model.isPreview) {
-                                    PreviewBadge()
-                                }
-                                if (model.supportsAudio) {
-                                    CapabilityBadge(
-                                        icon = Icons.Default.Mic,
-                                        text = stringResource(R.string.supports_audio),
-                                        isSupported = true
-                                    )
-                                } else {
-                                    CapabilityBadge(
-                                        icon = Icons.Default.MicOff,
-                                        text = stringResource(R.string.no_speech_support),
-                                        isSupported = false
-                                    )
-                                }
-                                if (model.supportsVision) {
-                                    CapabilityBadge(
-                                        icon = Icons.Default.Image,
-                                        text = stringResource(R.string.supports_vision),
-                                        isSupported = true
-                                    )
-                                } else {
-                                    CapabilityBadge(
-                                        icon = Icons.Default.HideImage,
-                                        text = stringResource(R.string.no_vision_support),
-                                        isSupported = false
-                                    )
-                                }
-                            }
-                        }
-                    }
+                val caps = model.capabilities
+                CapabilityBadge(icon = Icons.Default.TextFields, text = "Text", isSupported = true)
+                if (caps.imageInput) {
+                    CapabilityBadge(icon = Icons.Default.Image, text = "Vision", isSupported = true)
+                }
+                if (caps.audioInput) {
+                    CapabilityBadge(icon = Icons.Default.Mic, text = "Audio", isSupported = true)
+                }
+                if (caps.streaming) {
+                    CapabilityBadge(icon = Icons.Default.Stream, text = "Stream", isSupported = true)
+                }
+                if (caps.toolCalling) {
+                    CapabilityBadge(icon = Icons.Default.Build, text = "Tools", isSupported = true)
+                }
+                if (caps.reasoning) {
+                    CapabilityBadge(icon = Icons.Default.Psychology, text = "Reasoning", isSupported = true)
+                }
+                if (caps.realtime) {
+                    CapabilityBadge(icon = Icons.Default.Bolt, text = "Realtime", isSupported = true)
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.cancel))
-            }
         }
-    )
+    }
+}
+
+@Composable
+private fun SourceChip(source: com.example.rokidphone.ai.catalog.CatalogSource) {
+    val (label, color) = when (source) {
+        com.example.rokidphone.ai.catalog.CatalogSource.LIVE ->
+            "Live" to MaterialTheme.colorScheme.primaryContainer
+        com.example.rokidphone.ai.catalog.CatalogSource.CACHED ->
+            "Cached" to MaterialTheme.colorScheme.secondaryContainer
+        com.example.rokidphone.ai.catalog.CatalogSource.FALLBACK ->
+            "Fallback (verified ${com.example.rokidphone.ai.catalog.FallbackModelCatalog.LAST_VERIFIED_DATE})" to
+                MaterialTheme.colorScheme.tertiaryContainer
+        com.example.rokidphone.ai.catalog.CatalogSource.MANUAL ->
+            "Manual" to MaterialTheme.colorScheme.surfaceVariant
+    }
+    Surface(shape = MaterialTheme.shapes.small, color = color) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
+@Composable
+private fun StatusChip(status: com.example.rokidphone.ai.catalog.ModelStatus) {
+    when (status) {
+        com.example.rokidphone.ai.catalog.ModelStatus.STABLE -> Unit // no chip for the common case
+        com.example.rokidphone.ai.catalog.ModelStatus.PREVIEW -> PreviewBadge()
+        com.example.rokidphone.ai.catalog.ModelStatus.DEPRECATED -> SmallStatusChip(
+            "Deprecated", MaterialTheme.colorScheme.errorContainer
+        )
+        com.example.rokidphone.ai.catalog.ModelStatus.LEGACY -> SmallStatusChip(
+            "Legacy", MaterialTheme.colorScheme.surfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun SmallStatusChip(text: String, color: androidx.compose.ui.graphics.Color) {
+    Surface(shape = MaterialTheme.shapes.small, color = color) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
 }
 
 /**
@@ -1317,7 +1639,11 @@ fun CustomProviderSection(
     onModelNameChange: (String) -> Unit,
     apiKey: String,
     onApiKeyChange: (String) -> Unit,
-    onTestConnection: () -> Unit
+    onTestConnection: () -> Unit,
+    protocol: String = "chat_completions",
+    onProtocolChange: (String) -> Unit = {},
+    modelsPath: String = "models",
+    onModelsPathChange: (String) -> Unit = {}
 ) {
     var isValidUrl by remember(baseUrl) { 
         mutableStateOf(isHttpUrl(baseUrl))
@@ -1362,9 +1688,53 @@ fun CustomProviderSection(
                 },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
             )
-            
+
+            // Cleartext HTTP warning for local endpoints
+            if (baseUrl.startsWith("http://")) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Warning: cleartext HTTP endpoint. Traffic (including any API key) is not encrypted. Use only for trusted local servers.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
-            
+
+            // Wire protocol selector
+            Text(
+                text = "Protocol",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = protocol == "chat_completions",
+                    onClick = { onProtocolChange("chat_completions") },
+                    label = { Text("Chat Completions") }
+                )
+                FilterChip(
+                    selected = protocol == "responses",
+                    onClick = { onProtocolChange("responses") },
+                    label = { Text("Responses") }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Models endpoint path
+            OutlinedTextField(
+                value = modelsPath,
+                onValueChange = onModelsPathChange,
+                label = { Text("Models endpoint path") },
+                placeholder = { Text("models") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             // Model Name field
             OutlinedTextField(
                 value = modelName,

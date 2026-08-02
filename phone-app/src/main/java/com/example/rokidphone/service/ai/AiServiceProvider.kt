@@ -2,18 +2,20 @@ package com.example.rokidphone.service.ai
 
 import com.example.rokidphone.data.AiProvider
 import com.example.rokidphone.service.SpeechResult
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 /**
  * AI Service Unified Interface
  * All AI service providers must implement this interface
  */
 interface AiServiceProvider {
-    
+
     /**
      * Provider identifier
      */
     val provider: AiProvider
-    
+
     /**
      * Speech to text
      * @param pcmAudioData PCM format audio data
@@ -21,7 +23,7 @@ interface AiServiceProvider {
      * @return Speech recognition result
      */
     suspend fun transcribe(pcmAudioData: ByteArray, languageCode: String = "zh-TW"): SpeechResult
-    
+
     /**
      * Transcribe pre-encoded audio file (e.g. M4A, MP3, OGG)
      * Unlike transcribe() which expects raw PCM data, this accepts encoded audio with its MIME type.
@@ -34,14 +36,28 @@ interface AiServiceProvider {
     suspend fun transcribeAudioFile(audioData: ByteArray, mimeType: String, languageCode: String = "zh-TW"): SpeechResult {
         return transcribe(audioData, languageCode)
     }
-    
+
+    /**
+     * Streaming chat. Emits incremental [AiStreamEvent]s and finishes with
+     * [AiStreamEvent.Completed] or [AiStreamEvent.Error].
+     *
+     * The default implementation is a compatibility wrapper around [chat] for
+     * providers without a streaming adapter; streaming-capable services
+     * override it with a real SSE/WebSocket implementation.
+     */
+    fun streamChat(userMessage: String): Flow<AiStreamEvent> = flow {
+        val text = chat(userMessage)
+        emit(AiStreamEvent.TextDelta(text))
+        emit(AiStreamEvent.Completed(text))
+    }
+
     /**
      * Text chat
      * @param userMessage User message
      * @return AI response
      */
     suspend fun chat(userMessage: String): String
-    
+
     /**
      * Image understanding
      * @param imageData Image data (JPEG/PNG)
@@ -49,7 +65,7 @@ interface AiServiceProvider {
      * @return AI response
      */
     suspend fun analyzeImage(imageData: ByteArray, prompt: String = "Please describe this image"): String
-    
+
     /**
      * Clear conversation history
      */

@@ -72,11 +72,18 @@ class DeepSeekService(
     }
 
     companion object {
+        /** Legacy IDs known to emit `reasoning_content` before the V4 line. */
+        private val legacyReasonerIds = setOf("deepseek-reasoner", "deepseek-v3.2-speciale")
+
         /**
          * Models that emit `reasoning_content` and reject `temperature`.
-         * Keep in sync with [com.example.rokidphone.data.AIModel.DeepSeek.isReasoner].
+         * Resolved from the model capability map first (deepseek-v4-pro and
+         * later), with the legacy ID list as fallback.
          */
         fun isReasonerModel(modelId: String): Boolean =
-            modelId == "deepseek-reasoner" || modelId == "deepseek-v3.2-speciale"
+            modelId in legacyReasonerIds ||
+                com.example.rokidphone.ai.catalog.ModelCapabilityResolver
+                    .resolve(com.example.rokidphone.data.AiProvider.DEEPSEEK, modelId)
+                    .reasoning
     }
 }

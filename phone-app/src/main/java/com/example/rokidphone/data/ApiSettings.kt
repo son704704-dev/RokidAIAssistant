@@ -68,7 +68,7 @@ enum class AiProvider(
         defaultBaseUrl = "https://api.x.ai/v1/",
         isOpenAiCompatible = true,
         supportsSpeech = false,
-        supportsVision = false
+        supportsVision = true   // Grok 4.5+ image input (model-level)
     ),
     ALIBABA(
         displayNameResId = R.string.provider_alibaba,
@@ -86,16 +86,16 @@ enum class AiProvider(
         defaultBaseUrl = "https://api.z.ai/api/paas/v4/",
         isOpenAiCompatible = true,
         supportsSpeech = false,
-        supportsVision = false
+        supportsVision = true   // GLM-V models only (model-level)
     ),
     BAIDU(
         displayNameResId = R.string.provider_baidu,
-        description = "Ernie Bot / Wenxin, requires API Key + Secret Key",
+        description = "Ernie Bot / Wenxin via Qianfan v2 (legacy OAuth kept)",
         website = "https://cloud.baidu.com",
-        defaultBaseUrl = "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/",
+        defaultBaseUrl = "https://qianfan.baidubce.com/v2/",
         isOpenAiCompatible = false,
         supportsSpeech = false,
-        supportsVision = false
+        supportsVision = true   // ERNIE VL models only (model-level)
     ),
     PERPLEXITY(
         displayNameResId = R.string.provider_perplexity,
@@ -104,7 +104,7 @@ enum class AiProvider(
         defaultBaseUrl = "https://api.perplexity.ai/",
         isOpenAiCompatible = true,
         supportsSpeech = false,
-        supportsVision = false
+        supportsVision = true   // Sonar image/attachment input (model-level)
     ),
     MOONSHOT(
         displayNameResId = R.string.provider_moonshot,
@@ -190,848 +190,78 @@ data class ModelOption(
 )
 
 /**
- * Default Model List
+ * Legacy static model list, now backed by
+ * [com.example.rokidphone.ai.catalog.FallbackModelCatalog] (verified
+ * 2026-08-02). Kept as a compatibility facade for callers that still consume
+ * [ModelOption]; new code should use the ModelCatalogRepository four-tier
+ * catalog (live → cache → fallback → manual).
  */
 object AvailableModels {
-    val geminiModels = listOf(
-        ModelOption(
-            id = "gemini-3.1-flash",
-            displayName = "Gemini 3.1 Flash",
-            provider = AiProvider.GEMINI,
-            supportsAudio = true,
-            supportsVision = true,
-            description = "2026 Flash flagship, 1M context, best value"
-        ),
-        ModelOption(
-            id = "gemini-3.1-flash-lite",
-            displayName = "Gemini 3.1 Flash-Lite",
-            provider = AiProvider.GEMINI,
-            supportsAudio = true,
-            supportsVision = true,
-            description = "Fastest & cheapest in 3.1 series, 1M context"
-        ),
-        ModelOption(
-            id = "gemini-3.1-pro-deep-think",
-            displayName = "Gemini 3.1 Pro Deep Think",
-            provider = AiProvider.GEMINI,
-            supportsAudio = true,
-            supportsVision = true,
-            isPreview = true,
-            description = "Extended reasoning mode for complex tasks, ~1M context (Preview)"
-        ),
-        ModelOption(
-            id = "gemini-3.1-pro-preview",
-            displayName = "Gemini 3.1 Pro (Preview)",
-            provider = AiProvider.GEMINI,
-            supportsAudio = true,
-            supportsVision = true,
-            isPreview = true,
-            description = "Best agentic + vibe coding capabilities (Preview)"
-        ),
-        ModelOption(
-            id = "gemini-3-flash-preview",
-            displayName = "Gemini 3 Flash (Preview)",
-            provider = AiProvider.GEMINI,
-            supportsAudio = true,
-            supportsVision = true,
-            isPreview = true,
-            description = "Frontier performance at low cost (Preview)"
-        ),
-        ModelOption(
-            id = "gemini-2.5-pro",
-            displayName = "Gemini 2.5 Pro",
-            provider = AiProvider.GEMINI,
-            supportsAudio = true,
-            supportsVision = true,
-            description = "Stable. Most capable reasoning model, supports deep coding"
-        ),
-        ModelOption(
-            id = "gemini-2.5-flash",
-            displayName = "Gemini 2.5 Flash",
-            provider = AiProvider.GEMINI,
-            supportsAudio = true,
-            supportsVision = true,
-            description = "Stable. Best price-performance, low latency, high throughput"
-        ),
-        ModelOption(
-            id = "gemini-2.5-flash-lite",
-            displayName = "Gemini 2.5 Flash-Lite",
-            provider = AiProvider.GEMINI,
-            supportsAudio = true,
-            supportsVision = true,
-            description = "Stable. Fastest & cheapest in 2.5 series, 2M+ TPS design"
-        )
-    )
-    
-    val openaiModels = listOf(
-        // TODO: Verify exact API model ID once GPT-5.5 is publicly listed.
-        ModelOption(
-            id = "gpt-5.5",
-            displayName = "GPT-5.5 (TODO: verify ID)",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = true,
-            isPreview = true,
-            description = "Reported next-gen flagship; verify the official API ID before production use"
-        ),
-        ModelOption(
-            id = "gpt-5.4",
-            displayName = "GPT-5.4",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "2026 flagship general-purpose model, ~1M context"
-        ),
-        ModelOption(
-            id = "gpt-5.4-pro",
-            displayName = "GPT-5.4 Pro (Reasoning)",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Top-tier reasoning flagship, ~1M context"
-        ),
-        ModelOption(
-            id = "gpt-5.4-mini",
-            displayName = "GPT-5.4 mini",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Cost-effective 5.4-class model, ~400K context"
-        ),
-        ModelOption(
-            id = "gpt-5.4-nano",
-            displayName = "GPT-5.4 nano",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Ultra-light classification & high-volume tasks, ~400K context"
-        ),
-        ModelOption(
-            id = "gpt-5.2",
-            displayName = "GPT-5.2",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Flagship for coding & agentic tasks, ~400K context"
-        ),
-        ModelOption(
-            id = "gpt-5.2-codex",
-            displayName = "GPT-5.2 Codex",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Agentic coding optimized with context compaction, ~400K context"
-        ),
-        ModelOption(
-            id = "gpt-5.1",
-            displayName = "GPT-5.1",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "OpenAI recommended general-purpose model, ~400K context"
-        ),
-        ModelOption(
-            id = "gpt-5-mini",
-            displayName = "GPT-5 Mini",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Cost-effective, high-throughput, ~128K context"
-        ),
-        ModelOption(
-            id = "gpt-5-nano",
-            displayName = "GPT-5 Nano",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Ultra-light classification & high-volume tasks, ~128K context"
-        ),
-        ModelOption(
-            id = "o3",
-            displayName = "o3 (Reasoning)",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Deep reasoning model for complex science, coding, and math, 200K context"
-        ),
-        // TODO: Verify exact API model ID for o3-pro once GA.
-        ModelOption(
-            id = "o3-pro",
-            displayName = "o3 Pro (Reasoning, TODO: verify ID)",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Top-tier o3 reasoning tier; confirm official API ID before production use"
-        ),
-        // TODO: Verify exact API model ID for o4-mini.
-        ModelOption(
-            id = "o4-mini",
-            displayName = "o4-mini (Reasoning, TODO: verify ID)",
-            provider = AiProvider.OPENAI,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Compact o4 reasoning tier; verify the official API ID before production use"
-        ),
-        ModelOption(
-            id = "gpt-4o",
-            displayName = "GPT-4o",
-            provider = AiProvider.OPENAI,
-            supportsAudio = true,
-            supportsVision = true,
-            description = "Legacy multimodal flagship retained for backward compatibility, 128K context"
-        )
-    )
-    
-    val anthropicModels = listOf(
-        // TODO: Verify exact API model ID for Claude Sonnet 4.7.
-        ModelOption(
-            id = "claude-sonnet-4-7",
-            displayName = "Claude Sonnet 4.7 (TODO: verify ID)",
-            provider = AiProvider.ANTHROPIC,
-            supportsAudio = false,
-            supportsVision = true,
-            isPreview = true,
-            description = "Reported Sonnet 4.7 tier; verify the official API ID before production use"
-        ),
-        ModelOption(
-            id = "claude-opus-4-7",
-            displayName = "Claude Opus 4.7",
-            provider = AiProvider.ANTHROPIC,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "2026 flagship, best for agents & coding. 200K/1M (beta) context"
-        ),
-        ModelOption(
-            id = "claude-opus-4-6",
-            displayName = "Claude Opus 4.6",
-            provider = AiProvider.ANTHROPIC,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Most intelligent, best for agents & coding. 200K/1M (beta) context"
-        ),
-        ModelOption(
-            id = "claude-sonnet-4-6",
-            displayName = "Claude Sonnet 4.6",
-            provider = AiProvider.ANTHROPIC,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Best speed + intelligence balance. 200K/1M (beta) context"
-        ),
-        ModelOption(
-            id = "claude-haiku-4-5-20251001",
-            displayName = "Claude Haiku 4.5",
-            provider = AiProvider.ANTHROPIC,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Fastest frontier model, vision-capable. 200K context"
-        ),
-        // TODO: Verify exact API model ID for Claude Opus 4 (legacy 4.0 line).
-        ModelOption(
-            id = "claude-opus-4",
-            displayName = "Claude Opus 4 (TODO: verify ID)",
-            provider = AiProvider.ANTHROPIC,
-            supportsAudio = false,
-            supportsVision = true,
-            isPreview = true,
-            description = "Earlier Opus 4 generation; verify the official API ID before production use"
-        ),
-        // TODO: Verify exact API model ID for Claude Sonnet 4 (legacy 4.0 line).
-        ModelOption(
-            id = "claude-sonnet-4",
-            displayName = "Claude Sonnet 4 (TODO: verify ID)",
-            provider = AiProvider.ANTHROPIC,
-            supportsAudio = false,
-            supportsVision = true,
-            isPreview = true,
-            description = "Earlier Sonnet 4 generation; verify the official API ID before production use"
-        ),
-        // TODO: Verify exact API model ID for Claude 3.7 Sonnet.
-        ModelOption(
-            id = "claude-3-7-sonnet-latest",
-            displayName = "Claude 3.7 Sonnet (TODO: verify ID)",
-            provider = AiProvider.ANTHROPIC,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Claude 3.7 Sonnet legacy tier; confirm the official API ID before production use"
-        )
-    )
-    
-    val deepseekModels = listOf(
-        // TODO: Verify exact API model IDs for the V4 line once published.
-        ModelOption(
-            id = "deepseek-v4-pro",
-            displayName = "DeepSeek V4 Pro (TODO: verify ID)",
-            provider = AiProvider.DEEPSEEK,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Reported V4 Pro flagship; verify the official API ID before production use"
-        ),
-        ModelOption(
-            id = "deepseek-v4-flash-max",
-            displayName = "DeepSeek V4 Flash Max (TODO: verify ID)",
-            provider = AiProvider.DEEPSEEK,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Reported V4 Flash Max tier; verify the official API ID before production use"
-        ),
-        // TODO: Verify whether 'deepseek-r1' is still a valid public alias.
-        ModelOption(
-            id = "deepseek-r1",
-            displayName = "DeepSeek R1 (TODO: verify ID)",
-            provider = AiProvider.DEEPSEEK,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Standalone R1 reasoning alias; verify the official API ID before production use"
-        ),
-        ModelOption(
-            id = "deepseek-chat",
-            displayName = "DeepSeek V3.2 (Chat)",
-            provider = AiProvider.DEEPSEEK,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "DeepSeek V3.2 general chat model (OpenAI-compatible endpoint)"
-        ),
-        ModelOption(
-            id = "deepseek-reasoner",
-            displayName = "DeepSeek V3.2 (Reasoner)",
-            provider = AiProvider.DEEPSEEK,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Reasoning model. Strips temperature/top_p/penalties; returns reasoning_content"
-        ),
-        ModelOption(
-            id = "deepseek-v3.2-speciale",
-            displayName = "DeepSeek V3.2 Speciale",
-            provider = AiProvider.DEEPSEEK,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Preview reasoning variant. Strips temperature/top_p/penalties"
-        )
-    )
-    
-    val groqModels = listOf(
-        ModelOption(
-            id = "moonshotai/kimi-k2-instruct",
-            displayName = "Kimi K2 Instruct (Groq)",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Moonshot Kimi K2 hosted on Groq for ultra-low latency"
-        ),
-        ModelOption(
-            id = "openai/gpt-oss-120b",
-            displayName = "GPT-OSS 120B (Groq)",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "OpenAI's open-weight 120B model hosted on Groq"
-        ),
-        ModelOption(
-            id = "openai/gpt-oss-20b",
-            displayName = "GPT-OSS 20B (Groq)",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "OpenAI's open-weight 20B model hosted on Groq"
-        ),
-        ModelOption(
-            id = "qwen/qwen3-32b",
-            displayName = "Qwen3 32B (Groq)",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Alibaba Qwen3 32B hosted on Groq, 131K context"
-        ),
-        ModelOption(
-            id = "meta-llama/llama-4-scout-17b-16e-instruct",
-            displayName = "Llama 4 Scout",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Meta's latest MoE model (109B total), fast and vision-capable on Groq"
-        ),
-        ModelOption(
-            id = "meta-llama/llama-4-maverick-17b-128e-instruct",
-            displayName = "Llama 4 Maverick",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Meta's most powerful MoE model (400B total), top-tier open model"
-        ),
-        ModelOption(
-            id = "llama-3.3-70b-versatile",
-            displayName = "Llama 3.3 70B",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Reliable and powerful model, optimized for tool use"
-        ),
-        ModelOption(
-            id = "llama-3.1-70b-versatile",
-            displayName = "Llama 3.1 70B",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Previous generation 70B model, stable and proven"
-        ),
-        ModelOption(
-            id = "llama-3.1-8b-instant",
-            displayName = "Llama 3.1 8B",
-            provider = AiProvider.GROQ,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Fast and cost-effective model for simple tasks"
-        )
-    )
-    
-    val anythingllmModels = listOf(
-        ModelOption(
-            id = "workspace",
-            displayName = "Workspace Model",
-            provider = AiProvider.ANYTHINGLLM,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Model determined by the AnythingLLM workspace configuration"
-        )
+    private fun toOption(model: com.example.rokidphone.ai.catalog.ModelInfo) = ModelOption(
+        id = model.id,
+        displayName = model.displayName,
+        provider = model.provider,
+        supportsAudio = model.capabilities.audioInput,
+        supportsVision = model.capabilities.imageInput,
+        isPreview = model.status == com.example.rokidphone.ai.catalog.ModelStatus.PREVIEW,
+        description = model.description
     )
 
-    val customModels = listOf(
-        ModelOption(
-            id = "custom",
-            displayName = "Custom Model",
-            provider = AiProvider.CUSTOM,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "User-defined model name"
-        ),
-        ModelOption(
-            id = "llama4",
-            displayName = "Llama 4 (Ollama)",
-            provider = AiProvider.CUSTOM,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Local Llama 4 model via Ollama"
-        ),
-        ModelOption(
-            id = "deepseek-r1",
-            displayName = "DeepSeek R1 (Ollama)",
-            provider = AiProvider.CUSTOM,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Local DeepSeek reasoning model"
-        ),
-        ModelOption(
-            id = "minicpm-v-2.6",
-            displayName = "MiniCPM-V 2.6 (Ollama)",
-            provider = AiProvider.CUSTOM,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Efficient local vision model, GPT-4V level performance on mobile parameters"
-        ),
-        ModelOption(
-            id = "moondream2",
-            displayName = "Moondream 2 (Ollama)",
-            provider = AiProvider.CUSTOM,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Tiny vision model designed to run on almost any hardware"
-        )
-    )
-    
-    val xaiModels = listOf(
-        // TODO: Verify exact API model ID for Grok 4.3 once xAI publishes it.
-        ModelOption(
-            id = "grok-4.3",
-            displayName = "Grok 4.3 (TODO: verify ID)",
-            provider = AiProvider.XAI,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Reported Grok 4.3 tier; verify the official API ID before production use"
-        ),
-        ModelOption(
-            id = "grok-4.20-beta-latest-reasoning",
-            displayName = "Grok 4.20 Beta (Reasoning)",
-            provider = AiProvider.XAI,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Pure reasoning beta flagship, 2M context. No penalty/stop/reasoning_effort params"
-        ),
-        ModelOption(
-            id = "grok-4.20",
-            displayName = "Grok 4.20 (Early Access)",
-            provider = AiProvider.XAI,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Multi-Agent flagship, most capable (Early Access only)"
-        ),
-        ModelOption(
-            id = "grok-4",
-            displayName = "Grok 4 (Reasoning)",
-            provider = AiProvider.XAI,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Pure reasoning flagship, 256K context. No penalty/stop params"
-        ),
-        ModelOption(
-            id = "grok-4.1-fast",
-            displayName = "Grok 4.1 Fast",
-            provider = AiProvider.XAI,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Best value — fastest, lowest cost, 2M context window"
-        ),
-        ModelOption(
-            id = "grok-3",
-            displayName = "Grok 3",
-            provider = AiProvider.XAI,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Stable general-purpose, 128K context"
-        ),
-        ModelOption(
-            id = "grok-3-mini",
-            displayName = "Grok 3 Mini",
-            provider = AiProvider.XAI,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Budget tier with reasoning traces, 128K context"
-        ),
-        ModelOption(
-            id = "grok-2-image-1212",
-            displayName = "Grok Imagine (Image Gen)",
-            provider = AiProvider.XAI,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Image/video generation via Grok Imagine API"
-        )
-    )
-    
-    val alibabaModels = listOf(
-        ModelOption(
-            id = "qwen3-max-2026-01-23",
-            displayName = "Qwen3 Max (2026-01-23)",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Latest Qwen3 Max snapshot with thinking mode, 262K context"
-        ),
-        ModelOption(
-            id = "qwen3.5-plus",
-            displayName = "Qwen3.5 Plus",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Qwen3.5 flagship balanced tier, 131K context"
-        ),
-        ModelOption(
-            id = "qwen3.5-flash",
-            displayName = "Qwen3.5 Flash",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Qwen3.5 fast & cost-effective variant, 131K context"
-        ),
-        ModelOption(
-            id = "qwen3-max-thinking",
-            displayName = "Qwen 3 Max (Thinking)",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Qwen 3 Max with step-by-step reasoning mode for complex problems"
-        ),
-        ModelOption(
-            id = "qwen3-max",
-            displayName = "Qwen 3 Max",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Alibaba's most powerful model, top-tier performance"
-        ),
-        ModelOption(
-            id = "qwen-plus",
-            displayName = "Qwen Plus",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Balanced model offering strong performance at a lower cost"
-        ),
-        ModelOption(
-            id = "qwen-turbo",
-            displayName = "Qwen Turbo",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "High-speed model optimized for simple queries and high throughput"
-        ),
-        ModelOption(
-            id = "qwen2.5-vl-72b",
-            displayName = "Qwen 2.5 VL 72B",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Flagship 72B vision-language model with top-tier OCR and diagram understanding"
-        ),
-        ModelOption(
-            id = "qwen2.5-vl-32b",
-            displayName = "Qwen 2.5 VL 32B",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Balanced 32B vision model, strong performance at moderate cost"
-        ),
-        ModelOption(
-            id = "qwen2.5-vl-7b",
-            displayName = "Qwen 2.5 VL 7B",
-            provider = AiProvider.ALIBABA,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Lightweight 7B vision model for cost-effective image tasks"
-        )
-    )
-    
-    val zhipuModels = listOf(
-        ModelOption(
-            id = "glm-5",
-            displayName = "GLM-5",
-            provider = AiProvider.ZHIPU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Zhipu's 744B MoE flagship. Ultimate Chinese/English bilingual model"
-        ),
-        ModelOption(
-            id = "glm-5.1",
-            displayName = "GLM-5.1",
-            provider = AiProvider.ZHIPU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Refined GLM-5 successor with improved reasoning, 128K context"
-        ),
-        ModelOption(
-            id = "glm-4.6v",
-            displayName = "GLM-4.6V (Vision)",
-            provider = AiProvider.ZHIPU,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Vision-enabled GLM-4.6 variant, 128K context"
-        ),
-        ModelOption(
-            id = "glm-4.7",
-            displayName = "GLM-4.7",
-            provider = AiProvider.ZHIPU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Zhipu's 2026 flagship. State-of-the-art Chinese/English bilingual"
-        ),
-        ModelOption(
-            id = "glm-4.6",
-            displayName = "GLM-4.6",
-            provider = AiProvider.ZHIPU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "355B parameter model, strong capabilities at lower cost"
-        ),
-        ModelOption(
-            id = "glm-4-plus",
-            displayName = "GLM-4 Plus",
-            provider = AiProvider.ZHIPU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Enhanced version of GLM-4 with better long-context handling"
-        ),
-        ModelOption(
-            id = "glm-4-air",
-            displayName = "GLM-4 Air",
-            provider = AiProvider.ZHIPU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Lightweight GLM-4 variant optimized for speed and cost"
-        ),
-        ModelOption(
-            id = "glm-4-flash",
-            displayName = "GLM-4 Flash",
-            provider = AiProvider.ZHIPU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Free/Low-cost high speed model"
-        )
-    )
-    
-    val baiduModels = listOf(
-        ModelOption(
-            id = "ernie-4.0-8k",
-            displayName = "ERNIE 4.0 8K",
-            provider = AiProvider.BAIDU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Baidu's flagship ERNIE model with 8K context window"
-        ),
-        ModelOption(
-            id = "ernie-3.5-8k",
-            displayName = "ERNIE 3.5 8K",
-            provider = AiProvider.BAIDU,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Cost-effective ERNIE model for general tasks"
-        )
-    )
-    
-    val perplexityModels = listOf(
-        ModelOption(
-            id = "sonar",
-            displayName = "Sonar",
-            provider = AiProvider.PERPLEXITY,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Lightweight, cost-effective search model with grounding"
-        ),
-        ModelOption(
-            id = "sonar-pro",
-            displayName = "Sonar Pro",
-            provider = AiProvider.PERPLEXITY,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Advanced search offering with grounding, supporting complex queries and follow-ups"
-        ),
-        ModelOption(
-            id = "sonar-reasoning-pro",
-            displayName = "Sonar Reasoning Pro",
-            provider = AiProvider.PERPLEXITY,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Precise reasoning offering with Chain of Thought (CoT)"
-        ),
-        ModelOption(
-            id = "sonar-deep-research",
-            displayName = "Sonar Deep Research",
-            provider = AiProvider.PERPLEXITY,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Expert-level research model conducting exhaustive searches and generating comprehensive reports"
-        )
-    )
-    
-    val moonshotModels = listOf(
-        ModelOption(
-            id = "kimi-k2.5",
-            displayName = "Kimi K2.5 (Instant)",
-            provider = AiProvider.MOONSHOT,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Latest Kimi model with multimodal and video understanding, 256K context"
-        ),
-        ModelOption(
-            id = "kimi-k2.5-thinking",
-            displayName = "Kimi K2.5 (Thinking)",
-            provider = AiProvider.MOONSHOT,
-            supportsAudio = false,
-            supportsVision = true,
-            description = "Kimi K2.5 with extended chain-of-thought reasoning, 256K context"
-        ),
-        ModelOption(
-            id = "moonshot-v1-128k",
-            displayName = "Moonshot V1 128K",
-            provider = AiProvider.MOONSHOT,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "128K context window for long document processing"
-        ),
-        ModelOption(
-            id = "moonshot-v1-32k",
-            displayName = "Moonshot V1 32K",
-            provider = AiProvider.MOONSHOT,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Balanced 32K context for everyday tasks"
-        ),
-        ModelOption(
-            id = "moonshot-v1-8k",
-            displayName = "Moonshot V1 8K",
-            provider = AiProvider.MOONSHOT,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Fast and cost-effective model for short conversations"
-        )
-    )
+    private val catalog get() = com.example.rokidphone.ai.catalog.FallbackModelCatalog
 
-    val geminiLiveModels = listOf(
-        ModelOption(
-            id = "gemini-2.5-flash-exp",
-            displayName = "Gemini 2.5 Flash (Live)",
-            provider = AiProvider.GEMINI_LIVE,
-            supportsAudio = true,
-            supportsVision = true,
-            description = "Live streaming model for real-time voice interactions"
-        )
-    )
+    val geminiModels get() = catalog.geminiModels.map(::toOption)
+    val openaiModels get() = catalog.openaiModels.map(::toOption)
+    val anthropicModels get() = catalog.anthropicModels.map(::toOption)
+    val deepseekModels get() = catalog.deepseekModels.map(::toOption)
+    val groqModels get() = catalog.groqModels.map(::toOption)
+    val anythingllmModels get() = catalog.anythingllmModels.map(::toOption)
+    val customModels get() = catalog.customModels.map(::toOption)
+    val xaiModels get() = catalog.xaiModels.map(::toOption)
+    val alibabaModels get() = catalog.alibabaModels.map(::toOption)
+    val zhipuModels get() = catalog.zhipuModels.map(::toOption)
+    val baiduModels get() = catalog.baiduModels.map(::toOption)
+    val perplexityModels get() = catalog.perplexityModels.map(::toOption)
+    val moonshotModels get() = catalog.moonshotModels.map(::toOption)
+    val geminiLiveModels get() = catalog.geminiLiveModels.map(::toOption)
+    val mistralModels get() = catalog.mistralModels.map(::toOption)
 
-    val mistralModels = listOf(
-        // TODO: Verify exact API model IDs against https://docs.mistral.ai/getting-started/models/ before production use.
-        ModelOption(
-            id = "mistral-medium-3.5",
-            displayName = "Mistral Medium 3.5 (TODO: verify ID)",
-            provider = AiProvider.MISTRAL,
-            supportsAudio = false,
-            supportsVision = true,
-            isPreview = true,
-            description = "Reported mid-tier balanced model; verify the official API ID before production use"
-        ),
-        ModelOption(
-            id = "mistral-large-latest",
-            displayName = "Mistral Large (latest)",
-            provider = AiProvider.MISTRAL,
-            supportsAudio = false,
-            supportsVision = false,
-            description = "Mistral's flagship 'large' tier alias maintained by Mistral."
-        ),
-        // TODO: Verify exact API model ID for Ministral 3 (3B).
-        ModelOption(
-            id = "ministral-3-3b",
-            displayName = "Ministral 3 3B (TODO: verify ID)",
-            provider = AiProvider.MISTRAL,
-            supportsAudio = false,
-            supportsVision = false,
-            isPreview = true,
-            description = "Compact Ministral edge tier; verify the official API ID before production use"
-        )
-    )
+    fun getModelsForProvider(provider: AiProvider): List<ModelOption> =
+        catalog.modelsFor(provider).map(::toOption)
 
-    fun getModelsForProvider(provider: AiProvider): List<ModelOption> {
-        return when (provider) {
-            AiProvider.GEMINI -> geminiModels
-            AiProvider.OPENAI -> openaiModels
-            AiProvider.ANTHROPIC -> anthropicModels
-            AiProvider.DEEPSEEK -> deepseekModels
-            AiProvider.GROQ -> groqModels
-            AiProvider.XAI -> xaiModels
-            AiProvider.ALIBABA -> alibabaModels
-            AiProvider.ZHIPU -> zhipuModels
-            AiProvider.BAIDU -> baiduModels
-            AiProvider.PERPLEXITY -> perplexityModels
-            AiProvider.MOONSHOT -> moonshotModels
-            AiProvider.MISTRAL -> mistralModels
-            AiProvider.GEMINI_LIVE -> geminiLiveModels
-            AiProvider.ANYTHINGLLM -> anythingllmModels
-            AiProvider.CUSTOM -> customModels
-        }
-    }
-
-    fun findModel(modelId: String): ModelOption? {
-        return allModels.find { it.id == modelId }
-    }
+    fun findModel(modelId: String): ModelOption? = allModels.find { it.id == modelId }
 
     val allModels: List<ModelOption>
-        get() = geminiModels + openaiModels + anthropicModels + deepseekModels + groqModels +
-                xaiModels + alibabaModels + zhipuModels + baiduModels + perplexityModels + moonshotModels + mistralModels + geminiLiveModels + anythingllmModels + customModels
+        get() = AiProvider.entries.flatMap { getModelsForProvider(it) }
 }
+
+/**
+ * Alibaba Cloud Model Studio regional endpoints.
+ *
+ * NOTE: regional hostnames follow the documented DashScope naming scheme;
+ * verify the current hostname for each region in the Alibaba Cloud Model
+ * Studio docs before relying on it (last checked 2026-08-02).
+ */
+object AlibabaRegions {
+    const val CHINA = "china"
+    const val SINGAPORE = "singapore"
+    const val US = "us"
+    const val GERMANY = "germany"
+    const val JAPAN = "japan"
+    const val CUSTOM = "custom"
+
+    val all = listOf(CHINA, SINGAPORE, US, GERMANY, JAPAN, CUSTOM)
+
+    fun baseUrlFor(region: String, customBaseUrl: String = ""): String = when (region) {
+        CHINA -> "https://dashscope.aliyuncs.com/compatible-mode/v1/"
+        SINGAPORE -> "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/"
+        US -> "https://dashscope-us.aliyuncs.com/compatible-mode/v1/"
+        GERMANY -> "https://dashscope-de.aliyuncs.com/compatible-mode/v1/"
+        JAPAN -> "https://dashscope-jp.aliyuncs.com/compatible-mode/v1/"
+        CUSTOM -> customBaseUrl.ifBlank { baseUrlFor(CHINA) }
+        else -> baseUrlFor(CHINA)
+    }
+}
+
 
 /**
  * Provider-specific configuration
@@ -1049,7 +279,11 @@ data class ApiSettings(
     // AI Chat settings
     val aiProvider: AiProvider = AiProvider.GEMINI,
     val aiModelId: String = "gemini-2.5-flash",
-    
+
+    // Per-provider model memory: provider name -> last selected model ID.
+    // Switching providers restores the model the user picked for that provider.
+    val providerModelIds: Map<String, String> = emptyMap(),
+
     // API Keys for each provider
     val geminiApiKey: String = "",
     val openaiApiKey: String = "",
@@ -1060,7 +294,11 @@ data class ApiSettings(
     val alibabaApiKey: String = "",
     val zhipuApiKey: String = "",
     val baiduApiKey: String = "",
-    val baiduSecretKey: String = "",  // Baidu requires both API Key and Secret Key
+    val baiduSecretKey: String = "",  // Baidu legacy: API Key + Secret Key OAuth
+    // Baidu Qianfan v2: single bearer API key (preferred). When blank and the
+    // legacy key pair exists, legacy mode is used (see baiduUseLegacyAuth).
+    val baiduQianfanApiKey: String = "",
+    val baiduUseLegacyAuth: Boolean = false,
     val perplexityApiKey: String = "",
     val moonshotApiKey: String = "",
     val mistralApiKey: String = "",
@@ -1074,7 +312,17 @@ data class ApiSettings(
     // Custom base URLs (for providers that support it)
     val customBaseUrl: String = "http://localhost:11434/v1/",
     val customModelName: String = "llama4",
-    
+    // Custom endpoint protocol: "chat_completions" (default) or "responses"
+    val customProtocol: String = "chat_completions",
+    // Custom endpoint models-list path (default "models")
+    val customModelsPath: String = "models",
+    // Manual capability overrides for the Custom model: e.g. "vision", "audio_input"
+    val customCapabilityOverrides: Set<String> = emptySet(),
+
+    // Alibaba Cloud Model Studio region (see AlibabaRegions)
+    val alibabaRegion: String = AlibabaRegions.CHINA,
+    val alibabaCustomBaseUrl: String = "",
+
     // Speech recognition settings
     val sttProvider: SttProvider = SttProvider.GEMINI,
     // Empty string = SettingsRepository will resolve to device locale on first run.
@@ -1181,6 +429,14 @@ data class ApiSettings(
     // Send phone recording results (transcript + AI response) to glasses display (default: true)
     val pushRecordingToGlasses: Boolean = true
 ) {
+    /** Baidu: Qianfan v2 key preferred; legacy key pair when in legacy mode. */
+    fun getBaiduEffectiveApiKey(): String =
+        if (baiduUseLegacyAuth) baiduApiKey else baiduQianfanApiKey.ifBlank { baiduApiKey }
+
+    /** True when Baidu should use the legacy API Key + Secret Key OAuth flow. */
+    fun isBaiduLegacyMode(): Boolean =
+        baiduUseLegacyAuth || (baiduQianfanApiKey.isBlank() && baiduApiKey.isNotBlank() && baiduSecretKey.isNotBlank())
+
     /**
      * Get current AI provider's API Key
      */
@@ -1194,7 +450,7 @@ data class ApiSettings(
             AiProvider.XAI -> xaiApiKey
             AiProvider.ALIBABA -> alibabaApiKey
             AiProvider.ZHIPU -> zhipuApiKey
-            AiProvider.BAIDU -> baiduApiKey
+            AiProvider.BAIDU -> getBaiduEffectiveApiKey()
             AiProvider.PERPLEXITY -> perplexityApiKey
             AiProvider.MOONSHOT -> moonshotApiKey
             AiProvider.MISTRAL -> mistralApiKey
@@ -1217,7 +473,7 @@ data class ApiSettings(
             AiProvider.XAI -> xaiApiKey
             AiProvider.ALIBABA -> alibabaApiKey
             AiProvider.ZHIPU -> zhipuApiKey
-            AiProvider.BAIDU -> baiduApiKey
+            AiProvider.BAIDU -> getBaiduEffectiveApiKey()
             AiProvider.PERPLEXITY -> perplexityApiKey
             AiProvider.MOONSHOT -> moonshotApiKey
             AiProvider.MISTRAL -> mistralApiKey
@@ -1226,7 +482,7 @@ data class ApiSettings(
             AiProvider.CUSTOM -> customApiKey
         }
     }
-    
+
     /**
      * Get base URL for current provider
      */
@@ -1234,60 +490,92 @@ data class ApiSettings(
         return when (aiProvider) {
             AiProvider.CUSTOM -> customBaseUrl.ifBlank { AiProvider.CUSTOM.defaultBaseUrl }
             AiProvider.ANYTHINGLLM -> anythingllmServerUrl.ifBlank { AiProvider.ANYTHINGLLM.defaultBaseUrl }
+            AiProvider.ALIBABA -> AlibabaRegions.baseUrlFor(alibabaRegion, alibabaCustomBaseUrl)
             else -> aiProvider.defaultBaseUrl
         }
     }
-    
+
     /**
      * Get model ID for current provider
      */
-    fun getCurrentModelId(): String {
-        return when (aiProvider) {
-            AiProvider.CUSTOM -> customModelName.ifBlank { aiModelId }
-            else -> aiModelId
-        }
+    fun getCurrentModelId(): String = getModelIdForProvider(aiProvider)
+
+    /**
+     * Get the model the user last selected for [provider]; falls back to the
+     * legacy single [aiModelId] for the active provider, then to the verified
+     * fallback default.
+     */
+    fun getModelIdForProvider(provider: AiProvider): String {
+        if (provider == AiProvider.CUSTOM) return customModelName.ifBlank { aiModelId }
+        providerModelIds[provider.name]?.takeIf { it.isNotBlank() }?.let { return it }
+        if (provider == aiProvider && aiModelId.isNotBlank()) return aiModelId
+        return com.example.rokidphone.ai.catalog.FallbackModelCatalog.defaultModelFor(provider)
     }
-    
+
+    /** Return a copy with [modelId] stored as the selection for [provider]. */
+    fun withModelForProvider(provider: AiProvider, modelId: String): ApiSettings {
+        val newMap = providerModelIds.toMutableMap().apply { put(provider.name, modelId) }
+        return copy(
+            providerModelIds = newMap,
+            aiModelId = if (provider == aiProvider) modelId else aiModelId
+        )
+    }
+
+    /** Apply legacy model-ID migrations (e.g. DeepSeek V3 aliases → V4). */
+    fun migrateLegacyModelIds(): ApiSettings {
+        val migrations = com.example.rokidphone.ai.catalog.FallbackModelCatalog.legacyModelMigration
+        val newMap = providerModelIds.mapValues { (providerName, id) ->
+            if (providerName == AiProvider.DEEPSEEK.name) migrations[id] ?: id else id
+        }
+        val newActive = if (aiProvider == AiProvider.DEEPSEEK) migrations[aiModelId] ?: aiModelId else aiModelId
+        return if (newMap != providerModelIds || newActive != aiModelId) {
+            copy(providerModelIds = newMap, aiModelId = newActive)
+        } else this
+    }
+
     /**
      * Check if settings are valid
      */
     fun isValid(): Boolean {
         return when (aiProvider) {
             AiProvider.CUSTOM -> customBaseUrl.isNotBlank() && isValidUrl(customBaseUrl)
-            AiProvider.BAIDU -> baiduApiKey.isNotBlank() && baiduSecretKey.isNotBlank()
+            AiProvider.BAIDU ->
+                if (isBaiduLegacyMode()) baiduApiKey.isNotBlank() && baiduSecretKey.isNotBlank()
+                else baiduQianfanApiKey.isNotBlank()
             AiProvider.ANYTHINGLLM ->
                 anythingllmServerUrl.isNotBlank() && anythingllmApiKey.isNotBlank() && anythingllmWorkspaceSlug.isNotBlank()
             else -> getCurrentApiKey().isNotBlank()
         }
     }
-    
+
     /**
      * Check if specified provider has API Key configured
      */
     fun isProviderConfigured(provider: AiProvider): Boolean {
         return when (provider) {
             AiProvider.CUSTOM -> customBaseUrl.isNotBlank() && isValidUrl(customBaseUrl)
-            AiProvider.BAIDU -> baiduApiKey.isNotBlank() && baiduSecretKey.isNotBlank()
+            AiProvider.BAIDU ->
+                baiduQianfanApiKey.isNotBlank() || (baiduApiKey.isNotBlank() && baiduSecretKey.isNotBlank())
             AiProvider.GEMINI_LIVE -> geminiApiKey.isNotBlank()  // Shares Gemini API key
             AiProvider.ANYTHINGLLM ->
                 anythingllmServerUrl.isNotBlank() && anythingllmApiKey.isNotBlank() && anythingllmWorkspaceSlug.isNotBlank()
             else -> getApiKeyForProvider(provider).isNotBlank()
         }
     }
-    
+
     /**
      * Check if any speech recognition service is available
      */
     fun hasSpeechServiceConfigured(): Boolean {
-        val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ, AiProvider.XAI)
+        val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ)
         return sttProviders.any { isProviderConfigured(it) }
     }
-    
+
     /**
      * Get list of configured STT providers
      */
     fun getConfiguredSttProviders(): List<AiProvider> {
-        val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ, AiProvider.XAI)
+        val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ)
         return sttProviders.filter { isProviderConfigured(it) }
     }
     
@@ -1360,7 +648,7 @@ fun ApiSettings.validateForChat(): SettingsValidationResult {
     return when {
         aiProvider == AiProvider.CUSTOM && !isValidUrl(customBaseUrl) ->
             SettingsValidationResult.InvalidConfiguration("Invalid custom provider URL")
-        aiProvider == AiProvider.BAIDU && (baiduApiKey.isBlank() || baiduSecretKey.isBlank()) ->
+        aiProvider == AiProvider.BAIDU && !isProviderConfigured(AiProvider.BAIDU) ->
             SettingsValidationResult.MissingApiKey(AiProvider.BAIDU)
         aiProvider == AiProvider.ANYTHINGLLM && !isValid() ->
             SettingsValidationResult.InvalidConfiguration(
@@ -1376,7 +664,7 @@ fun ApiSettings.validateForChat(): SettingsValidationResult {
  * Validate settings for speech recognition
  */
 fun ApiSettings.validateForSpeech(): SettingsValidationResult {
-    val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ, AiProvider.XAI)
+    val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ)
     val configuredStt = sttProviders.filter { isProviderConfigured(it) }
     
     return if (configuredStt.isEmpty()) {

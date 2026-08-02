@@ -331,6 +331,9 @@ interface AiServiceProvider {
 
     suspend fun transcribe(pcmAudioData: ByteArray, languageCode: String = "zh-TW"): SpeechResult
     suspend fun transcribeAudioFile(audioData: ByteArray, mimeType: String, languageCode: String = "zh-TW"): SpeechResult
+    /** Real streaming; default impl wraps chat() for non-streaming providers. */
+    fun streamChat(userMessage: String): Flow<AiStreamEvent>
+    /** Batch chat (compatibility API kept for all existing callers). */
     suspend fun chat(userMessage: String): String
     suspend fun analyzeImage(imageData: ByteArray, prompt: String = "Please describe this image"): String
     fun clearHistory()
@@ -340,23 +343,70 @@ interface AiServiceProvider {
 > **Note:** `transcribeAudioFile()` accepts pre-encoded audio (M4A, MP3, OGG) with its MIME type.
 > The default implementation falls back to `transcribe()` treating data as PCM.
 
+#### Provider Registry & Model Catalog
+
+Provider metadata is data-driven (`ai/catalog/`), not a growing `when` block:
+
+- `ProviderRegistry` / `ProviderDescriptor` — one entry per provider: wire
+  protocol (`ApiProtocol`), catalog format, models endpoint, auth style,
+  regional endpoint support.
+- `ModelCatalogRepository` — four-tier model catalog:
+  **live Models API → on-device cache (24h TTL) → verified static fallback →
+  manual model ID**. The fallback catalog records `LAST_VERIFIED_DATE` and the
+  official documentation source per provider; a preview or deprecated model is
+  never the sole default.
+- `ModelCapabilities` — model-level flags (text/image/audio input, streaming,
+  tool calling, reasoning, realtime, transcription, context sizes). Vision is
+  decided per model, not per provider: a text-only model never receives an
+  image request.
+- `ModelCapabilityResolver` — live metadata → fallback capability map →
+  conservative provider default → manual override (Custom provider).
+- `ProviderRequestPolicy` — capability-driven request parameters. OpenAI-only
+  knobs (`reasoning_effort`, `verbosity`, `max_completion_tokens`) are scoped
+  to the OpenAI provider; DeepSeek reasoning models strip sampling params;
+  Perplexity never receives penalty params; Groq/xAI/others use standard
+  Chat Completions shapes.
+- `ProviderApiException` — classified errors (invalid key, permission, model
+  unavailable/deprecated, rate limit, quota, region, invalid parameter,
+  unsupported image, context too long, network, timeout, unavailable) with
+  HTTP status + provider code preserved and secrets redacted.
+
+#### Streaming
+
+`AiStreamEvent` (`TextDelta`, `ToolCallDelta`, `Citation`, `Usage`,
+`Thinking`, `Completed`, `Error`) is emitted by:
+
+- OpenAI-compatible SSE (Chat Completions chunks) and OpenAI Responses SSE
+  (`response.output_text.delta`, `response.completed`, ...)
+- Anthropic Messages SSE (`content_block_delta`, `message_delta`; thinking
+  blocks surface only as a `Thinking` marker, never as text)
+- Gemini `:streamGenerateContent?alt=sse`
+
+DeepSeek `reasoning_content` and Claude thinking are never shown to the user.
+
 #### Supported AI Providers
 
-| Provider       | Implementation             | Features                                 |
-| -------------- | -------------------------- | ---------------------------------------- |
-| Gemini         | `GeminiService`            | Native SDK, multimodal                   |
-| OpenAI         | `OpenAiCompatibleService`  | OpenAI-compatible API                    |
-| Anthropic      | `AnthropicService`         | Custom API format                        |
-| DeepSeek       | `OpenAiCompatibleService`  | OpenAI-compatible                        |
-| Groq           | `OpenAiCompatibleService`  | OpenAI-compatible                        |
-| xAI            | `OpenAiCompatibleService`  | OpenAI-compatible                        |
-| Alibaba (Qwen) | `OpenAiCompatibleService`  | OpenAI-compatible                        |
-| Zhipu (GLM)    | `OpenAiCompatibleService`  | OpenAI-compatible                        |
-| Perplexity     | `OpenAiCompatibleService`  | OpenAI-compatible                        |
-| Moonshot       | `OpenAiCompatibleService`  | OpenAI-compatible                        |
-| Baidu          | `BaiduService`             | OAuth authentication                     |
-| Gemini Live    | `GeminiService` (fallback) | Live session handled by `PhoneAIService` |
-| Custom         | `OpenAiCompatibleService`  | User-defined OpenAI-compatible endpoint  |
+| Provider       | Protocol                   | Implementation            | Notes                                   |
+| -------------- | -------------------------- | ------------------------- | --------------------------------------- |
+| Gemini         | `GEMINI_GENERATE_CONTENT`  | `GeminiService`           | Native generateContent + SSE            |
+| OpenAI         | `OPENAI_RESPONSES`         | `OpenAiCompatibleService` | Responses API, Chat Completions fallback |
+| Anthropic      | `ANTHROPIC_MESSAGES`       | `AnthropicService`        | x-api-key + anthropic-version, SSE      |
+| DeepSeek       | `OPENAI_CHAT_COMPLETIONS`  | `DeepSeekService`         | reasoning_content side channel          |
+| Groq           | `OPENAI_CHAT_COMPLETIONS`  | `OpenAiCompatibleService` | + Whisper transcription endpoint        |
+| xAI            | `OPENAI_CHAT_COMPLETIONS`  | `OpenAiCompatibleService` | grok-4.5 vision via image_url           |
+| Alibaba (Qwen) | `OPENAI_CHAT_COMPLETIONS`  | `OpenAiCompatibleService` | Regional endpoints (China/SG/US/DE/JP/custom) |
+| Zhipu (GLM)    | `OPENAI_CHAT_COMPLETIONS`  | `OpenAiCompatibleService` | Text vs vision models tracked separately |
+| Baidu          | `BAIDU_QIANFAN_V2`         | `QianfanV2Service`        | Bearer key; legacy OAuth via `BaiduService` |
+| Perplexity     | `OPENAI_CHAT_COMPLETIONS`  | `PerplexityService`       | Sonar; citations/search results preserved |
+| Moonshot       | `OPENAI_CHAT_COMPLETIONS`  | `OpenAiCompatibleService` | Kimi multimodal                         |
+| Mistral        | `OPENAI_CHAT_COMPLETIONS`  | `OpenAiCompatibleService` | Models API capability metadata parsed   |
+| Gemini Live    | `GEMINI_LIVE`              | `GeminiLiveSession`       | WebSocket; `GeminiService` for non-live ops |
+| AnythingLLM    | `ANYTHING_LLM`             | adapter                   | Capability depends on workspace LLM     |
+| Custom         | `CUSTOM_OPENAI_COMPATIBLE` | `OpenAiCompatibleService` | Chat Completions or Responses, cleartext warning |
+
+STT is decoupled from chat: only providers with a real transcription endpoint
+(OpenAI Whisper, Groq Whisper, Gemini native audio) can transcribe; the chat
+model catalog never implies STT support.
 
 #### STT Service Architecture
 

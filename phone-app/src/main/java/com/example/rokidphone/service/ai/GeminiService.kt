@@ -2,10 +2,16 @@ package com.example.rokidphone.service.ai
 
 import android.util.Base64
 import android.util.Log
+import com.example.rokidphone.ai.catalog.ProviderApiException
+import com.example.rokidphone.ai.catalog.ProviderErrorKind
 import com.example.rokidphone.data.AiProvider
 import com.example.rokidphone.service.SpeechResult
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -51,6 +57,129 @@ class GeminiService(
 
     private val apiUrl: String
         get() = "$baseUrl/$modelId:generateContent"
+
+    private val streamApiUrl: String
+        get() = "$baseUrl/$modelId:streamGenerateContent"
+
+    /**
+     * Streaming chat via `:streamGenerateContent?alt=sse`.
+     * Emits [AiStreamEvent.TextDelta] per chunk and a single
+     * [AiStreamEvent.Completed] with the concatenated text.
+     */
+    override fun streamChat(userMessage: String): Flow<AiStreamEvent> = channelFlow {
+        if (apiKey.isBlank()) {
+            trySend(
+                AiStreamEvent.Error(
+                    ProviderErrorKind.INVALID_API_KEY,
+                    ERROR_API_KEY_NOT_CONFIGURED
+                )
+            )
+            close()
+            awaitClose { }
+            return@channelFlow
+        }
+
+        val contents = JSONArray()
+        for ((role, content) in conversationHistory.takeLast(6)) {
+            val geminiRole = if (role == "user") "user" else "model"
+            contents.put(JSONObject().apply {
+                put("role", geminiRole)
+                put("parts", JSONArray().apply {
+                    put(JSONObject().put("text", content))
+                })
+            })
+        }
+        contents.put(JSONObject().apply {
+            put("role", "user")
+            put("parts", JSONArray().apply {
+                put(JSONObject().put("text", userMessage))
+            })
+        })
+
+        val requestJson = JSONObject().apply {
+            put("systemInstruction", JSONObject().apply {
+                put("parts", JSONArray().put(JSONObject().put("text", getFullSystemPrompt())))
+            })
+            put("contents", contents)
+            put("generationConfig", JSONObject().apply {
+                put("temperature", temperature.toDouble())
+                put("maxOutputTokens", maxTokens.coerceAtLeast(1024))
+                put("topP", topP.toDouble())
+                buildThinkingConfig()?.let { put("thinkingConfig", it) }
+            })
+        }
+
+        val request = Request.Builder()
+            .url("$streamApiUrl?alt=sse&key=$apiKey")
+            .addHeader("Content-Type", "application/json")
+            .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        val call = client.newCall(request)
+
+        val fullText = StringBuilder()
+        var usage: AiStreamEvent.Usage? = null
+        var failed = false
+
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) {
+                    failed = true
+                    val error = ProviderApiException.fromHttpStatus(
+                        response.code, response.body?.string(), response.header("Retry-After")
+                    )
+                    trySend(AiStreamEvent.Error(error.kind, error.message ?: "Provider error", error.httpStatus))
+                    return@use
+                }
+                val source = response.body?.source() ?: return@use
+                SseParser.readEvents(source) { event ->
+                    if (event is SseParser.SseEvent.Data) {
+                        try {
+                            val json = JSONObject(event.payload)
+                            val parts = json.optJSONArray("candidates")
+                                ?.optJSONObject(0)
+                                ?.optJSONObject("content")
+                                ?.optJSONArray("parts")
+                            if (parts != null) {
+                                for (i in 0 until parts.length()) {
+                                    val text = parts.optJSONObject(i)?.optString("text", "").orEmpty()
+                                    if (text.isNotEmpty()) {
+                                        fullText.append(text)
+                                        trySend(AiStreamEvent.TextDelta(text))
+                                    }
+                                }
+                            }
+                            json.optJSONObject("usageMetadata")?.let { u ->
+                                usage = AiStreamEvent.Usage(
+                                    u.optLong("promptTokenCount").takeIf { it > 0 },
+                                    u.optLong("candidatesTokenCount").takeIf { it > 0 }
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Skipping malformed Gemini stream event")
+                        }
+                    }
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failed = true
+            trySend(
+                AiStreamEvent.Error(
+                    ProviderErrorKind.NETWORK_UNAVAILABLE,
+                    ProviderApiException.sanitize(e.message)
+                )
+            )
+        } finally {
+            if (!failed) {
+                val text = fullText.toString()
+                if (text.isNotEmpty()) addToHistory(userMessage, text)
+                trySend(AiStreamEvent.Completed(text, usage))
+            }
+            close()
+        }
+        awaitClose { call.cancel() }
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Build the optional `thinkingConfig` block for the current model.
@@ -319,16 +448,21 @@ Rules:
                 Log.e(TAG, "API key is not configured")
                 return@withContext "Sorry, unable to analyze this image. API key not configured."
             }
-            
-            val imageBase64 = Base64.encodeToString(imageData, Base64.NO_WRAP)
-            
+
+            val prepared = try {
+                ImagePayloadHelper.prepare(imageData)
+            } catch (e: ProviderImageException) {
+                return@withContext "Sorry, unable to analyze this image: ${e.message}"
+            }
+            val imageBase64 = Base64.encodeToString(prepared.data, Base64.NO_WRAP)
+
             val requestJson = JSONObject().apply {
                 put("contents", JSONArray().apply {
                     put(JSONObject().apply {
                         put("parts", JSONArray().apply {
                             put(JSONObject().apply {
                                 put("inline_data", JSONObject().apply {
-                                    put("mime_type", "image/jpeg")
+                                    put("mime_type", prepared.mimeType)
                                     put("data", imageBase64)
                                 })
                             })

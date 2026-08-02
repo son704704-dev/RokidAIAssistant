@@ -2,9 +2,15 @@ package com.example.rokidphone.service.ai
 
 import android.util.Base64
 import android.util.Log
+import com.example.rokidphone.ai.catalog.ProviderApiException
+import com.example.rokidphone.ai.catalog.ProviderErrorKind
 import com.example.rokidphone.data.AiProvider
 import com.example.rokidphone.service.SpeechResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -131,6 +137,109 @@ class AnthropicService(
             .build()
     }
 
+    /**
+     * Streaming chat via the Messages SSE API.
+     *
+     * `thinking_delta` blocks are never surfaced as text — only a
+     * [AiStreamEvent.Thinking] state marker is emitted; the final answer is
+     * assembled from `text_delta` events only.
+     */
+    override fun streamChat(userMessage: String): Flow<AiStreamEvent> = channelFlow {
+        val messages = buildChatMessages(userMessage)
+        val requestJson = buildChatRequest(messages).apply {
+            put("stream", true)
+        }
+        val request = buildAnthropicRequest("$baseUrl/messages", requestJson)
+        val call = client.newCall(request)
+
+        val fullText = StringBuilder()
+        var inputTokens: Long? = null
+        var outputTokens: Long? = null
+        var failed = false
+
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) {
+                    failed = true
+                    val error = ProviderApiException.fromHttpStatus(
+                        response.code, response.body?.string(), response.header("Retry-After")
+                    )
+                    trySend(AiStreamEvent.Error(error.kind, error.message ?: "Provider error", error.httpStatus))
+                    return@use
+                }
+                val source = response.body?.source() ?: return@use
+                SseParser.readEvents(source) { event ->
+                    if (event is SseParser.SseEvent.Data) {
+                        try {
+                            val json = JSONObject(event.payload)
+                            when (json.optString("type")) {
+                                "content_block_delta" -> {
+                                    val delta = json.optJSONObject("delta")
+                                    when (delta?.optString("type")) {
+                                        "text_delta" -> {
+                                            val text = delta.optString("text", "")
+                                            if (text.isNotEmpty()) {
+                                                fullText.append(text)
+                                                trySend(AiStreamEvent.TextDelta(text))
+                                            }
+                                        }
+                                        "thinking_delta", "signature_delta" -> {
+                                            // Reasoning content is never shown to the user.
+                                            trySend(AiStreamEvent.Thinking)
+                                        }
+                                    }
+                                }
+                                "message_start" -> {
+                                    inputTokens = json.optJSONObject("message")
+                                        ?.optJSONObject("usage")
+                                        ?.optLong("input_tokens")
+                                        ?.takeIf { it > 0 }
+                                }
+                                "message_delta" -> {
+                                    outputTokens = json.optJSONObject("usage")
+                                        ?.optLong("output_tokens")
+                                        ?.takeIf { it > 0 }
+                                }
+                                "error" -> {
+                                    val msg = json.optJSONObject("error")?.optString("message")
+                                    trySend(
+                                        AiStreamEvent.Error(
+                                            ProviderErrorKind.UNKNOWN,
+                                            ProviderApiException.sanitize(msg)
+                                        )
+                                    )
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Skipping malformed Anthropic stream event")
+                        }
+                    }
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failed = true
+            trySend(
+                AiStreamEvent.Error(
+                    ProviderErrorKind.NETWORK_UNAVAILABLE,
+                    ProviderApiException.sanitize(e.message)
+                )
+            )
+        } finally {
+            if (!failed) {
+                val text = fullText.toString()
+                if (text.isNotEmpty()) addToHistory(userMessage, text)
+                val usage = if (inputTokens != null || outputTokens != null) {
+                    AiStreamEvent.Usage(inputTokens, outputTokens)
+                } else null
+                trySend(AiStreamEvent.Completed(text, usage))
+            }
+            close()
+        }
+        awaitClose { call.cancel() }
+    }.flowOn(Dispatchers.IO)
+
     private fun parseChatResponse(response: okhttp3.Response, userMessage: String): String? {
         val responseBody = response.body?.string()
         if (!response.isSuccessful || responseBody == null) {
@@ -153,9 +262,14 @@ class AnthropicService(
     override suspend fun analyzeImage(imageData: ByteArray, prompt: String): String {
         return withContext(Dispatchers.IO) {
             Log.d(TAG, "Image analysis request, size: ${imageData.size} bytes")
-            
-            val imageBase64 = Base64.encodeToString(imageData, Base64.NO_WRAP)
-            
+
+            val prepared = try {
+                ImagePayloadHelper.prepare(imageData)
+            } catch (e: ProviderImageException) {
+                return@withContext "Sorry, unable to analyze this image: ${e.message}"
+            }
+            val imageBase64 = Base64.encodeToString(prepared.data, Base64.NO_WRAP)
+
             val messages = JSONArray().apply {
                 put(JSONObject().apply {
                     put("role", "user")
@@ -164,7 +278,7 @@ class AnthropicService(
                             put("type", "image")
                             put("source", JSONObject().apply {
                                 put("type", "base64")
-                                put("media_type", "image/jpeg")
+                                put("media_type", prepared.mimeType)
                                 put("data", imageBase64)
                             })
                         })

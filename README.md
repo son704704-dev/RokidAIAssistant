@@ -15,16 +15,18 @@
 # 1. Clone
 git clone https://github.com/your-repo/RokidAIAssistant.git && cd RokidAIAssistant
 
-# 2. Configure API keys
+# 2. (Optional) Configure API keys
 cp local.properties.template local.properties
-# Edit local.properties → Add your GEMINI_API_KEY (required)
+# Add any provider key — or skip this and enter keys later in the app's Settings screen.
 
 # 3. Build & Install
 ./gradlew :phone-app:installDebug    # Install phone app
 ./gradlew :glasses-app:installDebug  # Install glasses app (on Rokid device)
 ```
 
-> **Minimum requirement**: Only `GEMINI_API_KEY` is needed to run. Get one at [Google AI Studio](https://ai.google.dev/).
+> **No AI key is required** to install the app or open Settings. Only the one
+> provider you actually use needs a key (entered in-app, stored encrypted with
+> Android Keystore). `ROKID_CLIENT_SECRET` is only needed for glasses pairing.
 
 ---
 
@@ -53,7 +55,7 @@ cp local.properties.template local.properties
 | 🎤 Voice Interaction    | Speak to AI through glasses or phone                                                                                                                                                                                                       |
 | 📷 Photo Analysis       | Capture images with glasses camera, get AI analysis                                                                                                                                                                                        |
 | 🎙️ Recording & Analysis | Record audio from phone or glasses with auto AI transcription and analysis                                                                                                                                                                 |
-| 🤖 Multi-AI Providers   | 14 providers: Gemini, OpenAI, Anthropic, DeepSeek, Groq, xAI, Alibaba (Qwen), Zhipu (GLM), Baidu, Perplexity, Moonshot (Kimi), Mistral, Gemini Live, Custom (OpenAI-compatible)                                                            |
+| 🤖 Multi-AI Providers   | 15 providers: Gemini, OpenAI, Anthropic, DeepSeek, Groq, xAI, Alibaba (Qwen), Z.AI (GLM), Baidu Qianfan, Perplexity, Moonshot (Kimi), Mistral, Gemini Live, AnythingLLM, Custom (OpenAI-compatible) — models loaded dynamically from each provider's Models API |
 | 🎧 Multi-STT Providers  | 18 providers: Gemini, OpenAI Whisper, Groq Whisper, Deepgram, AssemblyAI, Azure Speech, iFLYTEK, Google Cloud STT, AWS Transcribe, Alibaba ASR, Tencent ASR, Baidu ASR, IBM Watson, Huawei SIS, Volcengine, Rev.ai, Speechmatics, Otter.ai |
 | 📱 Phone-Glasses Comm   | Via Rokid CXR SDK and Bluetooth SPP                                                                                                                                                                                                        |
 | 💬 Conversation History | Room database persistence                                                                                                                                                                                                                  |
@@ -155,19 +157,22 @@ Notes:
 - Do not commit `sn_auth_file.*` into version control.
 - Build will fail fast if multiple `sn_auth_file.*` files exist.
 
-**Required keys in `local.properties`:**
+**Keys in `local.properties` (all optional at build time):**
 
 ```properties
-# Required
+# Optional — any provider key can also be entered in-app
 GEMINI_API_KEY=your_gemini_api_key
-
-# Required for glasses connection
-ROKID_CLIENT_SECRET=your_rokid_secret_without_hyphens
-
-# Optional
 OPENAI_API_KEY=your_openai_key
 ANTHROPIC_API_KEY=your_anthropic_key
+
+# Required only for glasses connection
+ROKID_CLIENT_SECRET=your_rokid_secret_without_hyphens
 ```
+
+> The app picks models dynamically from each provider's official Models API
+> (live → 24h cache → verified fallback → manual ID). Fallback model lists are
+> verified against official docs — see `FallbackModelCatalog.kt`
+> (Last verified: 2026-08-02).
 
 ### Gradle Commands
 
@@ -240,8 +245,8 @@ Unit and integration test suites are implemented for protocol, service, factory,
 ### Manual Testing Checklist
 
 1. **Phone App**
-   - [ ] Launch app, verify Settings screen loads
-   - [ ] Configure AI provider (Gemini), test text chat
+   - [ ] Launch app, verify Settings screen loads (no API key required)
+   - [ ] Configure any AI provider, test text chat and streaming
    - [ ] Test voice input from phone microphone
    - [ ] Verify conversation history persists after restart
 
@@ -268,10 +273,13 @@ Unit and integration test suites are implemented for protocol, service, factory,
 
 ### Add a New AI Provider
 
-1. Create implementation in `phone-app/src/.../service/ai/YourProvider.kt`
-2. Implement `AiServiceProvider` interface (see [ARCHITECTURE.md](doc/ARCHITECTURE.md#ai-service-provider-interface))
-3. Register in `AiServiceFactory.kt`
-4. Add to `AiProvider` enum in settings
+1. Add a `ProviderDescriptor` entry in `ai/catalog/ProviderRegistry.kt`
+   (protocol, catalog format, models endpoint, auth style)
+2. If the wire protocol is new, add a request adapter implementing
+   `AiServiceProvider` (see [ARCHITECTURE.md](doc/ARCHITECTURE.md#ai-service-provider-interface))
+3. Add the provider to the `AiProvider` enum and the verified fallback list in
+   `ai/catalog/FallbackModelCatalog.kt` (with doc source + verification date)
+4. Wire credentials in `ApiSettings` / `SettingsRepository` and the Settings UI
 
 ### Add a New Screen (Compose)
 

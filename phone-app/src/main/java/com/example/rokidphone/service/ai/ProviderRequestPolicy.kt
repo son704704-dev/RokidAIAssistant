@@ -1,0 +1,150 @@
+package com.example.rokidphone.service.ai
+
+import com.example.rokidphone.ai.catalog.ModelCapabilities
+import com.example.rokidphone.data.AiProvider
+
+/** Which JSON field carries the output-token limit. */
+enum class TokenLimitField {
+    MAX_TOKENS,
+    MAX_COMPLETION_TOKENS,
+    NONE
+}
+
+/** How an image is embedded in a chat request for this protocol. */
+enum class ImageContentFormat {
+    /** Chat Completions style: `{"type":"image_url","image_url":{"url":"data:..."}}`. */
+    OPENAI_IMAGE_URL,
+
+    /** Responses API style: `{"type":"input_image","image_url":"data:..."}`. */
+    RESPONSES_INPUT_IMAGE,
+
+    /** Provider/model does not accept images. */
+    NONE
+}
+
+/**
+ * Capability-driven request policy for one provider+model combination.
+ *
+ * Replaces model-ID string matching as the *cross-provider* mechanism: no
+ * provider ever receives OpenAI-only parameters (`reasoning_effort`,
+ * `verbosity`, `max_completion_tokens`) unless this policy says so.
+ *
+ * The OpenAI family rules remain ID-based because OpenAI's Models API does
+ * not publish per-model parameter constraints; they are scoped strictly to
+ * [AiProvider.OPENAI] and verified against OpenAI docs (2026-08-02).
+ */
+data class ProviderRequestPolicy(
+    val tokenLimitField: TokenLimitField = TokenLimitField.MAX_TOKENS,
+    /** temperature / top_p are accepted. */
+    val allowSampling: Boolean = true,
+    /** frequency_penalty / presence_penalty are accepted. */
+    val allowPenalties: Boolean = true,
+    val allowStop: Boolean = true,
+    /** OpenAI o-series / GPT-5 reasoning effort parameter. */
+    val supportsReasoningEffort: Boolean = false,
+    /** OpenAI GPT-5.2+ verbosity parameter. */
+    val supportsVerbosity: Boolean = false,
+    val streaming: Boolean = true,
+    val imageContentFormat: ImageContentFormat = ImageContentFormat.OPENAI_IMAGE_URL,
+    /** Provider exposes a working /audio/transcriptions endpoint. */
+    val supportsAudioTranscriptions: Boolean = false,
+    /** Transcription model to use on that endpoint (STT is decoupled from chat). */
+    val transcriptionModel: String? = null
+)
+
+object ProviderRequestPolicies {
+
+    /**
+     * Resolve the effective policy.
+     *
+     * @param capabilities model-level capabilities from the catalog
+     * @param reasoningEffort user override ("none" unlocks sampling on GPT-5)
+     */
+    fun resolve(
+        provider: AiProvider,
+        modelId: String,
+        capabilities: ModelCapabilities,
+        reasoningEffort: String? = null
+    ): ProviderRequestPolicy = when (provider) {
+        AiProvider.OPENAI -> openAiPolicy(modelId, reasoningEffort)
+        AiProvider.GROQ -> ProviderRequestPolicy(
+            supportsAudioTranscriptions = true,
+            transcriptionModel = "whisper-large-v3-turbo",
+            imageContentFormat = if (capabilities.imageInput) ImageContentFormat.OPENAI_IMAGE_URL else ImageContentFormat.NONE
+        )
+        AiProvider.XAI -> xaiPolicy(modelId, capabilities)
+        AiProvider.DEEPSEEK -> ProviderRequestPolicy(
+            // Reasoning models reject sampling params and return reasoning_content.
+            allowSampling = !capabilities.reasoning,
+            allowPenalties = !capabilities.reasoning,
+            imageContentFormat = ImageContentFormat.NONE
+        )
+        AiProvider.PERPLEXITY -> ProviderRequestPolicy(
+            // Sonar documents temperature/top_p but not penalty parameters.
+            allowPenalties = false,
+            imageContentFormat = if (capabilities.imageInput) ImageContentFormat.OPENAI_IMAGE_URL else ImageContentFormat.NONE
+        )
+        AiProvider.ALIBABA, AiProvider.ZHIPU, AiProvider.MOONSHOT,
+        AiProvider.MISTRAL, AiProvider.BAIDU, AiProvider.CUSTOM -> ProviderRequestPolicy(
+            imageContentFormat = if (capabilities.imageInput) ImageContentFormat.OPENAI_IMAGE_URL else ImageContentFormat.NONE
+        )
+        else -> ProviderRequestPolicy(imageContentFormat = ImageContentFormat.NONE)
+    }
+
+    // ==================== OpenAI family rules (OpenAI provider only) ====================
+
+    /** o-series (o3, o4-mini...) — reasoning-only, classic chat shape. */
+    internal fun isOpenAiOSeries(modelId: String): Boolean =
+        modelId.matches(Regex("^o\\d.*"))
+
+    internal fun isOpenAiGpt5Family(modelId: String): Boolean =
+        modelId.startsWith("gpt-5")
+
+    /** GPT-5.x minor version >= 2 supports the verbosity parameter. */
+    internal fun openAiSupportsVerbosity(modelId: String): Boolean {
+        val match = Regex("^gpt-5\\.(\\d+).*").find(modelId) ?: return false
+        val minor = match.groupValues[1].toIntOrNull() ?: return false
+        return minor >= 2
+    }
+
+    /** Models verified as Responses-API-first on the OpenAI platform (2026-08-02). */
+    fun openAiPrefersResponses(modelId: String): Boolean =
+        modelId.startsWith("gpt-5.6")
+
+    private fun openAiPolicy(modelId: String, reasoningEffort: String?): ProviderRequestPolicy {
+        val oSeries = isOpenAiOSeries(modelId)
+        val gpt5 = isOpenAiGpt5Family(modelId)
+        val reasoningModel = oSeries || gpt5
+        val effectiveEffort = if (reasoningModel) reasoningEffort ?: "minimal" else null
+        val samplingLocked = oSeries || (gpt5 && effectiveEffort != null && effectiveEffort != "none")
+        return ProviderRequestPolicy(
+            tokenLimitField = if (reasoningModel) TokenLimitField.MAX_COMPLETION_TOKENS else TokenLimitField.MAX_TOKENS,
+            allowSampling = !samplingLocked,
+            allowPenalties = !samplingLocked,
+            supportsReasoningEffort = reasoningModel,
+            supportsVerbosity = openAiSupportsVerbosity(modelId),
+            supportsAudioTranscriptions = true,
+            transcriptionModel = "whisper-1",
+            imageContentFormat = ImageContentFormat.OPENAI_IMAGE_URL
+        )
+    }
+
+    // ==================== xAI family rules ====================
+
+    /**
+     * Grok 4 (pure reasoning) rejects penalties and stop. `grok-4.x` models
+     * (4.1-fast, 4.20, 4.5) are regular chat models.
+     */
+    internal fun isXaiReasoningOnly(modelId: String): Boolean =
+        modelId == "grok-4" || (modelId.startsWith("grok-4-") && !modelId.startsWith("grok-4."))
+
+    private fun xaiPolicy(modelId: String, capabilities: ModelCapabilities): ProviderRequestPolicy {
+        val reasoningOnly = isXaiReasoningOnly(modelId)
+        return ProviderRequestPolicy(
+            allowSampling = !reasoningOnly,
+            allowPenalties = !reasoningOnly,
+            allowStop = !reasoningOnly,
+            imageContentFormat = if (capabilities.imageInput) ImageContentFormat.OPENAI_IMAGE_URL else ImageContentFormat.NONE
+        )
+    }
+}

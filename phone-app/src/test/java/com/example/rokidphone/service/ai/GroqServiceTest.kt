@@ -61,12 +61,33 @@ class GroqServiceTest {
 
     @Test
     fun `analyzeImage - successful response returns description`() = runTest {
-        // 測試：Groq vision 成功回傳描述
-        val service = createService()
+        // 測試：Groq vision 成功回傳描述（圖片能力由模型決定，使用 vision 模型）
+        val service = OpenAiCompatibleService(
+            apiKey = "test-groq-key",
+            baseUrl = serverRule.baseUrl,
+            modelId = "meta-llama/llama-4-scout-17b-16e-instruct",
+            providerType = AiProvider.GROQ
+        )
         serverRule.server.enqueue(jsonResponse(TestFixtures.MockResponses.openAiChatSuccess("an object")))
 
         val result = service.analyzeImage(TestFixtures.createTestJpeg(), "what is this")
 
         assertThat(result).isEqualTo("an object")
+    }
+
+    @Test
+    fun `analyzeImage - text-only Groq model is rejected before any request`() = runTest {
+        // 測試：不支援圖片的模型不會收到圖片 request
+        val service = OpenAiCompatibleService(
+            apiKey = "test-groq-key",
+            baseUrl = serverRule.baseUrl,
+            modelId = "llama-3.3-70b-versatile",
+            providerType = AiProvider.GROQ
+        )
+
+        val result = service.analyzeImage(TestFixtures.createTestJpeg(), "what is this")
+
+        assertThat(result).contains("does not support")
+        assertThat(serverRule.server.requestCount).isEqualTo(0)
     }
 }

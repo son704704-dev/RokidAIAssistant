@@ -1412,7 +1412,8 @@ class PhoneAIService : Service() {
         }
         
         // Try other configured providers that support STT
-        val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ, AiProvider.XAI)
+        // (only providers with a real transcription endpoint — STT is decoupled from chat)
+        val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ)
         for (provider in sttProviders) {
             val apiKey = settings.getApiKeyForProvider(provider)
             if (apiKey.isNotBlank()) {
@@ -1452,8 +1453,7 @@ class PhoneAIService : Service() {
         return when (provider) {
             AiProvider.GEMINI -> "gemini-2.5-flash"
             AiProvider.OPENAI -> "gpt-5-mini"
-            AiProvider.GROQ -> "whisper-large-v3"
-            AiProvider.XAI -> "grok-2-latest"
+            AiProvider.GROQ -> "llama-3.3-70b-versatile"
             else -> AvailableModels.getModelsForProvider(provider).firstOrNull()?.id
         }
     }
@@ -1510,24 +1510,11 @@ class PhoneAIService : Service() {
         } ?: settings
         
         val modelInfo = AvailableModels.findModel(migratedSettings.aiModelId)
-        
-        // If model info not found, use provider's default model
-        if (modelInfo == null) {
-            Log.w(TAG, "Unknown model: ${migratedSettings.aiModelId}, using default model for ${migratedSettings.aiProvider}")
-            val defaultModel = AvailableModels.getModelsForProvider(migratedSettings.aiProvider).firstOrNull()
-            return if (defaultModel != null) {
-                migratedSettings.copy(aiModelId = defaultModel.id)
-            } else {
-                // Fall back to Gemini
-                migratedSettings.copy(
-                    aiProvider = AiProvider.GEMINI,
-                    aiModelId = "gemini-2.5-flash"
-                )
-            }
-        }
-        
-        // If model doesn't match provider, correct the provider
-        if (modelInfo.provider != migratedSettings.aiProvider) {
+
+        // Model not in the static fallback list: it may come from the live
+        // catalog or be a manually entered ID. Never clear the user's
+        // selection — keep it and only fix API-key problems below.
+        if (modelInfo != null && modelInfo.provider != migratedSettings.aiProvider) {
             Log.w(TAG, "Model ${migratedSettings.aiModelId} belongs to ${modelInfo.provider}, correcting provider")
             return migratedSettings.copy(aiProvider = modelInfo.provider)
         }
