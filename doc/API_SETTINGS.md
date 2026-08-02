@@ -93,6 +93,7 @@ column is only used when the API is unreachable and no cache exists.
 | Gemini Live | Live WebSocket           | ✅ Models API  | ✅                 | ✅ WS     | ✅ native    | ✅       | API key             |
 | AnythingLLM | Workspace API            | ❌ (workspace-defined) | ⚠️ unknown | ❌    | ❌           | ❌       | API key + URL       |
 | Custom      | Chat Completions or Responses | ✅ (endpoint-dependent) | ⚠️ manual override | ✅ | ❌    | ❌       | Optional key        |
+| On-Device Gemma | Local inference (no network) | ✅ (installed-file scan) | ❌ text-only | ✅ (engine-dependent) | ❌ | ❌ | None (on-device) |
 
 > Vision is a **model-level** capability: a provider marked ✅ still rejects
 > image requests for its text-only models. Free/trial quotas may exist for
@@ -115,6 +116,7 @@ column is only used when the API is unreachable and no cache exists.
 | Perplexity | sonar, sonar-pro, sonar-reasoning-pro, sonar-deep-research               |
 | Moonshot   | kimi-k2.5, kimi-k2.5-thinking                                            |
 | Mistral    | mistral-medium-3-5, mistral-large-2512, mistral-small-2603, ministral-3-8b |
+| On-Device Gemma | gemma-3n-E2B-it, gemma-3n-E4B-it (installed local files also listed)  |
 
 > The live Models API of your account always wins over this list. To update
 > the fallback: check each provider's official model docs, edit
@@ -146,6 +148,7 @@ The model list for each provider is loaded dynamically from its official API
 | **Gemini Live** | `wss://generativelanguage.googleapis.com/ws/...`                   |
 | **AnythingLLM** | User-defined server URL                                            |
 | **Custom**      | User-defined (Ollama, LM Studio, vLLM...)                          |
+| **On-Device Gemma** | None — local files in `filesDir/models/gemma` (`local://gemma/` sentinel) |
 
 ### Model catalog (four tiers)
 

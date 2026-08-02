@@ -221,4 +221,17 @@ class ApiSettingsTest {
         val b = ApiSettings(ttsProvider = TtsProvider.SYSTEM_TTS)
         assertThat(a).isNotEqualTo(b)
     }
+
+    @Test
+    fun `LOCAL_GEMMA needs no API key and is valid without credentials`() {
+        // 測試：裝置端 provider 不需 API key，且無憑證時仍視為有效
+        assertThat(AiProvider.LOCAL_GEMMA.requiresApiKey()).isFalse()
+        assertThat(AiProvider.LOCAL_GEMMA.isLocalInference()).isTrue()
+
+        val settings = ApiSettings(aiProvider = AiProvider.LOCAL_GEMMA)
+        assertThat(settings.getCurrentApiKey()).isEmpty()
+        assertThat(settings.isValid()).isTrue()
+        assertThat(settings.isProviderConfigured(AiProvider.LOCAL_GEMMA)).isTrue()
+        assertThat(settings.validateForChat()).isEqualTo(SettingsValidationResult.Valid)
+    }
 }

@@ -235,6 +235,8 @@
     <string name="provider_perplexity">Perplexity</string>
     <string name="provider_moonshot">Moonshot (Kimi)</string>
     <string name="provider_custom">自訂 / 自架伺服器</string>
+    <string name="provider_local_gemma">裝置端 Gemma（離線）</string>
+    <string name="provider_local_gemma_info">完全在裝置上執行 Gemma 模型，不需 API 金鑰、不需網路。請將 Gemma 模型檔（.task 或 .gguf）放入應用程式模型資料夾以啟用裝置端對話。</string>
     <string name="provider_gemini_live">Gemini Live</string>
     
     <!-- Speech Service Names (Legacy) -->

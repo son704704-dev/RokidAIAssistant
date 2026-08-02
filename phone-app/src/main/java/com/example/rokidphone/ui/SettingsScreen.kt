@@ -57,7 +57,13 @@ fun SettingsScreen(
     val catalogRepository = remember {
         com.example.rokidphone.ai.catalog.ModelCatalogRepository(
             remote = com.example.rokidphone.ai.catalog.RemoteModelCatalogSource(),
-            cache = com.example.rokidphone.ai.catalog.SharedPrefsModelCatalogCache(context.applicationContext)
+            cache = com.example.rokidphone.ai.catalog.SharedPrefsModelCatalogCache(context.applicationContext),
+            localSource = com.example.rokidphone.ai.catalog.LocalModelCatalogSource(
+                modelDirProvider = {
+                    // App-private model directory (no storage permission needed).
+                    java.io.File(context.applicationContext.filesDir, "models/gemma")
+                }
+            )
         )
     }
     var showProviderDialog by remember { mutableStateOf(false) }
@@ -191,8 +197,11 @@ fun SettingsScreen(
                 }
             }
 
-            // API Key settings section (for non-custom, non-AnythingLLM providers)
-            if (settings.aiProvider != AiProvider.CUSTOM && settings.aiProvider != AiProvider.ANYTHINGLLM) {
+            // API Key settings section (for non-custom, non-AnythingLLM,
+            // non-local providers — the on-device provider needs no key)
+            if (settings.aiProvider != AiProvider.CUSTOM &&
+                settings.aiProvider != AiProvider.ANYTHINGLLM &&
+                settings.aiProvider != AiProvider.LOCAL_GEMMA) {
                 item {
                                 SettingsSection(title = stringResource(R.string.api_keys)) {
                         when (settings.aiProvider) {

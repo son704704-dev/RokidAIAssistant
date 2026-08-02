@@ -24,7 +24,13 @@ data class ModelCatalogSnapshot(
 class ModelCatalogRepository(
     private val remote: RemoteModelCatalogSource,
     private val cache: ModelCatalogCache,
-    private val clock: () -> Long = { System.currentTimeMillis() }
+    private val clock: () -> Long = { System.currentTimeMillis() },
+    /**
+     * Optional discovery source for on-device ([ApiProtocol.LOCAL_INFERENCE])
+     * providers. When present, local providers resolve their catalog from
+     * installed model files plus the verified fallback list, never the network.
+     */
+    private val localSource: LocalModelCatalogSource? = null
 ) {
 
     companion object {
@@ -47,6 +53,9 @@ class ModelCatalogRepository(
         forceRefresh: Boolean = false
     ): ModelCatalogSnapshot {
         val descriptor = ProviderRegistry.descriptorFor(provider)
+        if (descriptor.protocol == ApiProtocol.LOCAL_INFERENCE) {
+            return localSnapshot(provider)
+        }
         val cached = cache.read(provider)
         val cacheFresh = cached != null && (clock() - cached.fetchedAtEpochMs) < ttlMs
 
@@ -72,6 +81,9 @@ class ModelCatalogRepository(
 
     /** Synchronous catalog access for UI first-paint (cache/fallback only, no network). */
     fun getCachedOrFallback(provider: AiProvider): ModelCatalogSnapshot {
+        if (ProviderRegistry.descriptorFor(provider).protocol == ApiProtocol.LOCAL_INFERENCE) {
+            return localSnapshot(provider)
+        }
         val cached = cache.read(provider)
         if (cached != null) {
             val models = cached.models.map { it.withSource(CatalogSource.CACHED) }
@@ -141,4 +153,25 @@ class ModelCatalogRepository(
         source = CatalogSource.FALLBACK,
         fetchedAtEpochMs = null
     )
+
+    /**
+     * Resolve an on-device provider's catalog: installed model files (scanned
+     * from the app-private directory) come first, then verified fallback
+     * entries that are not yet installed so the user can see what is available
+     * to add. Never touches the network.
+     */
+    private fun localSnapshot(provider: AiProvider): ModelCatalogSnapshot {
+        val installed = localSource?.scanInstalledModels().orEmpty()
+        val installedIds = installed.map { it.id }.toSet()
+        val notInstalled = FallbackModelCatalog.modelsFor(provider)
+            .filter { it.id !in installedIds }
+        val models = installed + notInstalled
+        val source = if (installed.isNotEmpty()) CatalogSource.LIVE else CatalogSource.FALLBACK
+        return ModelCatalogSnapshot(
+            provider = provider,
+            models = models,
+            source = source,
+            fetchedAtEpochMs = null
+        )
+    }
 }

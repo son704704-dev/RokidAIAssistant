@@ -38,8 +38,16 @@ cp local.properties.template local.properties
 ### 不涵蓋範圍
 
 - 眼鏡獨立運作（需要手機進行 AI 處理）
-- 離線 AI 推論
 - 影片串流或即時 AR 疊加
+
+### 裝置端推論（實驗性）
+
+- 可選的 **裝置端 Gemma** 服務商完全在本機執行 Gemma 模型，**不需 API 金鑰、不需網路**。
+- 僅支援 **純文字**：語音轉文字與圖像理解會明確回報為不支援（優雅降級）。
+- 模型 **不隨 App 打包**。請將 Gemma 模型檔（`.task` 或 `.gguf`）放入 App 私有模型資料夾
+  （`filesDir/models/gemma`），安裝後的模型即會與內建預設一起顯示於模型清單中。
+- 推論引擎繫結（MediaPipe LLM Inference / llama.cpp）為可插拔設計：在尚未接上引擎前，
+  服務會回報「尚未載入裝置端模型」，而非默默改用雲端。
 
 ---
 
