@@ -106,6 +106,14 @@ class ModelCatalogRepository(
         return snapshot.models.none { it.id == selectedModelId }
     }
 
+    fun selectionWarning(snapshot: ModelCatalogSnapshot, selectedModelId: String): String? {
+        return if (isSelectionAbsent(snapshot, selectedModelId)) {
+            "Current selection is not in the latest catalog."
+        } else {
+            null
+        }
+    }
+
     /** Resolve effective capabilities for a (possibly manual) selection. */
     fun capabilitiesFor(snapshot: ModelCatalogSnapshot, modelId: String): ModelCapabilities {
         snapshot.models.find { it.id == modelId }?.let { return it.capabilities }
