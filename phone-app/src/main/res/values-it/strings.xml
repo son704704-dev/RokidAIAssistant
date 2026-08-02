@@ -144,6 +144,8 @@
     <string name="protocol_chat_completions">Chat Completions</string>
     <string name="protocol_responses">Responses</string>
     <string name="custom_models_path">Percorso endpoint modelli</string>
+    <string name="custom_supports_vision">Il modello supporta l\'input di immagini (vision)</string>
+    <string name="custom_supports_vision_subtitle">Abilita se questo modello può analizzare immagini (es. Gemma 4, LLaVA, MiniCPM-V). Necessario per l\'analisi delle foto su endpoint personalizzati.</string>
     <string name="secure_storage_unavailable">Impossibile inizializzare l\'archivio crittografato. Le chiavi API non verranno salvate su questo dispositivo.</string>
     
     <!-- API Key Validation -->

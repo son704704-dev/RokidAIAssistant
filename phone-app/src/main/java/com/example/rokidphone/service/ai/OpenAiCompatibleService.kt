@@ -44,7 +44,13 @@ open class OpenAiCompatibleService(
     /** "low" | "medium" | "high" — OpenAI GPT-5.2+ only. */
     val verbosity: String? = null,
     /** Use the OpenAI Responses API instead of Chat Completions (falls back automatically). */
-    private val useResponsesApi: Boolean = false
+    private val useResponsesApi: Boolean = false,
+    /**
+     * User-declared capability overrides (Custom endpoints only). When set,
+     * these win over catalog/provider-default resolution — e.g. enabling
+     * image input for a local LM Studio model that supports vision.
+     */
+    private val capabilityOverrides: com.example.rokidphone.ai.catalog.ModelCapabilities? = null
 ) : BaseAiService(apiKey, modelId, systemPrompt, temperature, maxTokens, topP, frequencyPenalty, presencePenalty), AiServiceProvider {
 
     companion object {
@@ -60,12 +66,16 @@ open class OpenAiCompatibleService(
 
     override val provider = providerType
 
+    /** Effective capabilities: user overrides (Custom) → catalog → provider default. */
+    private val effectiveCapabilities: com.example.rokidphone.ai.catalog.ModelCapabilities
+        get() = capabilityOverrides ?: ModelCapabilityResolver.resolve(providerType, modelId)
+
     /** Effective request policy for the current provider+model. */
     private val policy: ProviderRequestPolicy
         get() = ProviderRequestPolicies.resolve(
             providerType,
             modelId,
-            ModelCapabilityResolver.resolve(providerType, modelId),
+            effectiveCapabilities,
             reasoningEffort
         )
 
@@ -649,8 +659,7 @@ open class OpenAiCompatibleService(
 
     override suspend fun analyzeImage(imageData: ByteArray, prompt: String): String {
         return withContext(Dispatchers.IO) {
-            val capabilities = ModelCapabilityResolver.resolve(providerType, modelId)
-            if (!capabilities.imageInput || policy.imageContentFormat == ImageContentFormat.NONE) {
+            if (!effectiveCapabilities.imageInput || policy.imageContentFormat == ImageContentFormat.NONE) {
                 return@withContext "This provider does not support image analysis."
             }
 

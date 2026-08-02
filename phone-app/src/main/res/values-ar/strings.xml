@@ -144,6 +144,8 @@
     <string name="protocol_chat_completions">Chat Completions</string>
     <string name="protocol_responses">Responses</string>
     <string name="custom_models_path">مسار نقطة نهاية Models</string>
+    <string name="custom_supports_vision">النموذج يدعم إدخال الصور (الرؤية)</string>
+    <string name="custom_supports_vision_subtitle">فعّل إذا كان بإمكان هذا النموذج تحليل الصور (مثل Gemma 4 وLLaVA وMiniCPM-V). مطلوب لتحليل الصور على نقاط النهاية المخصصة.</string>
     <string name="secure_storage_unavailable">تعذر تهيئة التخزين المشفر. لن يتم حفظ مفاتيح API على هذا الجهاز.</string>
     
     <!-- API Key Validation -->

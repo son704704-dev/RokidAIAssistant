@@ -170,7 +170,9 @@ fun SettingsScreen(
                         protocol = settings.customProtocol,
                         onProtocolChange = { onSettingsChange(settings.copy(customProtocol = it)) },
                         modelsPath = settings.customModelsPath,
-                        onModelsPathChange = { onSettingsChange(settings.copy(customModelsPath = it)) }
+                        onModelsPathChange = { onSettingsChange(settings.copy(customModelsPath = it)) },
+                        capabilityOverrides = settings.customCapabilityOverrides,
+                        onCapabilityOverridesChange = { onSettingsChange(settings.copy(customCapabilityOverrides = it)) }
                     )
                 }
             }
@@ -1681,7 +1683,9 @@ fun CustomProviderSection(
     protocol: String = "chat_completions",
     onProtocolChange: (String) -> Unit = {},
     modelsPath: String = "models",
-    onModelsPathChange: (String) -> Unit = {}
+    onModelsPathChange: (String) -> Unit = {},
+    capabilityOverrides: Set<String> = emptySet(),
+    onCapabilityOverridesChange: (Set<String>) -> Unit = {}
 ) {
     var isValidUrl by remember(baseUrl) { 
         mutableStateOf(isHttpUrl(baseUrl))
@@ -1769,6 +1773,22 @@ fun CustomProviderSection(
                 placeholder = { Text("models") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Manual capability override: the catalog cannot know what a
+            // local endpoint's model supports, so the user declares it.
+            SettingsRowWithSwitch(
+                title = stringResource(R.string.custom_supports_vision),
+                subtitle = stringResource(R.string.custom_supports_vision_subtitle),
+                checked = com.example.rokidphone.ai.catalog.ModelCapabilityResolver.OVERRIDE_VISION in capabilityOverrides,
+                onCheckedChange = { checked ->
+                    val key = com.example.rokidphone.ai.catalog.ModelCapabilityResolver.OVERRIDE_VISION
+                    onCapabilityOverridesChange(
+                        if (checked) capabilityOverrides + key else capabilityOverrides - key
+                    )
+                }
             )
 
             Spacer(modifier = Modifier.height(12.dp))

@@ -158,7 +158,9 @@ object AiServiceFactory {
                 topP = settings.topP,
                 frequencyPenalty = settings.frequencyPenalty,
                 presencePenalty = settings.presencePenalty,
-                useResponsesApi = settings.customProtocol == "responses"
+                useResponsesApi = settings.customProtocol == "responses",
+                capabilityOverrides = com.example.rokidphone.ai.catalog.ModelCapabilityResolver
+                    .overridesFromKeys(AiProvider.CUSTOM, settings.customCapabilityOverrides)
             )
 
             else -> OpenAiCompatibleService(
@@ -268,7 +270,9 @@ object AiServiceFactory {
                 modelId = settings.customModelName.ifBlank { settings.aiModelId },
                 systemPrompt = "",
                 providerType = AiProvider.CUSTOM,
-                useResponsesApi = settings.customProtocol == "responses"
+                useResponsesApi = settings.customProtocol == "responses",
+                capabilityOverrides = com.example.rokidphone.ai.catalog.ModelCapabilityResolver
+                    .overridesFromKeys(AiProvider.CUSTOM, settings.customCapabilityOverrides)
             )
         }
     }
