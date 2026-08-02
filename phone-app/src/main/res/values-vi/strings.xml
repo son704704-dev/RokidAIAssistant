@@ -113,11 +113,43 @@
     <string name="no_speech_support">Không hỗ trợ âm thanh</string>
     <string name="no_vision_support">Không hỗ trợ thị giác</string>
     <string name="preview_badge">Xem trước</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">Đã cấu hình</string>
+    <string name="refresh_models">Làm mới mô hình</string>
+    <string name="remote_unavailable">Máy chủ từ xa không khả dụng</string>
+    <string name="search_models">Tìm kiếm mô hình</string>
+    <string name="no_models_match">Không có mô hình nào khớp với "%1$s"</string>
+    <string name="custom_model_id">ID mô hình tùy chỉnh</string>
+    <string name="use_model_id">Dùng</string>
+    <string name="source_live">Trực tiếp</string>
+    <string name="source_cached">Đã lưu cache</string>
+    <string name="source_fallback">Dự phòng (đã xác minh %1$s)</string>
+    <string name="source_manual">Thủ công</string>
+    <string name="status_deprecated">Ngừng hỗ trợ</string>
+    <string name="status_legacy">Cũ</string>
+    <string name="context_tokens">Ngữ cảnh: %1$s token</string>
+    <string name="cap_stream">Luồng</string>
+    <string name="cap_tools">Công cụ</string>
+    <string name="cap_reasoning">Suy luận</string>
+    <string name="cap_realtime">Thời gian thực</string>
+    <string name="model_not_in_catalog">Mô hình hiện tại "%1$s" không có trong danh sách mô hình của %2$s. Mô hình vẫn được giữ và tiếp tục sử dụng.</string>
+    <string name="baidu_qianfan_api_key">Khóa API Qianfan (v2, khuyên dùng)</string>
+    <string name="baidu_legacy_auth">Xác thực cũ</string>
+    <string name="baidu_legacy_auth_subtitle">Dùng OAuth API Key + Secret Key (ứng dụng Qianfan cũ)</string>
+    <string name="alibaba_region">Khu vực</string>
+    <string name="alibaba_workspace_base_url">URL cơ sở của workspace</string>
+    <string name="custom_cleartext_warning">Cảnh báo: endpoint HTTP không mã hóa. Lưu lượng (bao gồm mọi khóa API) không được mã hóa. Chỉ dùng cho máy chủ cục bộ đáng tin cậy.</string>
+    <string name="custom_protocol">Giao thức</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Đường dẫn endpoint Models</string>
+    <string name="secure_storage_unavailable">Không thể khởi tạo bộ nhớ mã hóa. Khóa API sẽ không được lưu trên thiết bị này.</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">Yêu cầu khóa API</string>
     <string name="api_key_not_set">Chưa cấu hình</string>
-    <string name="speech_service_not_configured">Dịch vụ nhận dạng giọng nói chưa được cấu hình. Vui lòng cấu hình khóa API Gemini, OpenAI, Groq hoặc xAI.</string>
+    <string name="speech_service_not_configured">Dịch vụ nhận dạng giọng nói chưa được cấu hình. Vui lòng cấu hình khóa API Gemini, OpenAI hoặc Groq.</string>
     <string name="api_key_setup_hint">Đi đến Cài đặt để cấu hình khóa API. Ứng dụng sẽ sử dụng dịch vụ dự phòng tích hợp cho đến khi được cấu hình.</string>
     <string name="go_to_settings">Đi đến Cài đặt</string>
     <string name="later">Để sau</string>

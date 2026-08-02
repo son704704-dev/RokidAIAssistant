@@ -113,11 +113,43 @@
     <string name="no_speech_support">音声非対応</string>
     <string name="no_vision_support">ビジョン非対応</string>
     <string name="preview_badge">プレビュー</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">設定済み</string>
+    <string name="refresh_models">モデルを再読み込み</string>
+    <string name="remote_unavailable">リモート利用不可</string>
+    <string name="search_models">モデルを検索</string>
+    <string name="no_models_match">「%1$s」に一致するモデルがありません</string>
+    <string name="custom_model_id">カスタムモデル ID</string>
+    <string name="use_model_id">使用</string>
+    <string name="source_live">ライブ</string>
+    <string name="source_cached">キャッシュ</string>
+    <string name="source_fallback">フォールバック(検証日 %1$s)</string>
+    <string name="source_manual">手動</string>
+    <string name="status_deprecated">非推奨</string>
+    <string name="status_legacy">レガシー</string>
+    <string name="context_tokens">コンテキスト: %1$s トークン</string>
+    <string name="cap_stream">ストリーム</string>
+    <string name="cap_tools">ツール</string>
+    <string name="cap_reasoning">推論</string>
+    <string name="cap_realtime">リアルタイム</string>
+    <string name="model_not_in_catalog">現在のモデル「%1$s」は %2$s のモデル一覧にありません。保持され、そのまま使用されます。</string>
+    <string name="baidu_qianfan_api_key">Qianfan API キー(v2、推奨)</string>
+    <string name="baidu_legacy_auth">レガシー認証</string>
+    <string name="baidu_legacy_auth_subtitle">API Key + Secret Key OAuth を使用(旧 Qianfan アプリ)</string>
+    <string name="alibaba_region">リージョン</string>
+    <string name="alibaba_workspace_base_url">Workspace ベース URL</string>
+    <string name="custom_cleartext_warning">警告: 平文 HTTP エンドポイントです。通信(API キーを含む)は暗号化されません。信頼できるローカルサーバーにのみ使用してください。</string>
+    <string name="custom_protocol">プロトコル</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Models エンドポイントパス</string>
+    <string name="secure_storage_unavailable">暗号化ストレージを初期化できませんでした。API キーはこのデバイスに保存されません。</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">API キーが必要です</string>
     <string name="api_key_not_set">未設定</string>
-    <string name="speech_service_not_configured">音声認識サービスが設定されていません。Gemini、OpenAI、Groq、または xAI API キーを設定してください。</string>
+    <string name="speech_service_not_configured">音声認識サービスが設定されていません。Gemini、OpenAI、または Groq API キーを設定してください。</string>
     <string name="api_key_setup_hint">設定から API キーを設定してください。設定完了まで内蔵のフォールバックサービスを使用します。</string>
     <string name="go_to_settings">設定へ</string>
     <string name="later">後で</string>

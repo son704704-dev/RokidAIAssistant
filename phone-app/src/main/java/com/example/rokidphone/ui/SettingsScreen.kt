@@ -251,7 +251,7 @@ fun SettingsScreen(
                                 )
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text(
-                                    text = "Region",
+                                    text = stringResource(R.string.alibaba_region),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -286,7 +286,7 @@ fun SettingsScreen(
                                     OutlinedTextField(
                                         value = settings.alibabaCustomBaseUrl,
                                         onValueChange = { onSettingsChange(settings.copy(alibabaCustomBaseUrl = it)) },
-                                        label = { Text("Workspace base URL") },
+                                        label = { Text(stringResource(R.string.alibaba_workspace_base_url)) },
                                         placeholder = { Text("https://.../compatible-mode/v1/") },
                                         modifier = Modifier.fillMaxWidth(),
                                         singleLine = true
@@ -310,15 +310,15 @@ fun SettingsScreen(
                             AiProvider.BAIDU -> {
                                 // Qianfan v2: single bearer API key (preferred)
                                 ApiKeyField(
-                                    label = "Qianfan API Key (v2, recommended)",
+                                    label = stringResource(R.string.baidu_qianfan_api_key),
                                     value = settings.baiduQianfanApiKey,
                                     onValueChange = { onSettingsChange(settings.copy(baiduQianfanApiKey = it)) },
                                     isActive = !settings.isBaiduLegacyMode()
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 SettingsRowWithSwitch(
-                                    title = "Legacy authentication",
-                                    subtitle = "Use API Key + Secret Key OAuth (older Qianfan apps)",
+                                    title = stringResource(R.string.baidu_legacy_auth),
+                                    subtitle = stringResource(R.string.baidu_legacy_auth_subtitle),
                                     checked = settings.isBaiduLegacyMode(),
                                     onCheckedChange = { onSettingsChange(settings.copy(baiduUseLegacyAuth = it)) }
                                 )
@@ -846,7 +846,7 @@ fun ProviderSelectionDialog(
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Icon(
                                         imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = "Configured",
+                                        contentDescription = stringResource(R.string.configured),
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(14.dp)
                                     )
@@ -917,7 +917,7 @@ fun ModelCatalogDialog(
         if (apiKey.isNotBlank()) refresh(force = false)
     }
 
-    val selectionWarning = repository.selectionWarning(snapshot, currentModelId)
+    val selectionMissing = repository.isSelectionAbsent(snapshot, currentModelId)
     val filteredModels = remember(snapshot, searchQuery) {
         if (searchQuery.isBlank()) snapshot.models
         else snapshot.models.filter {
@@ -935,7 +935,10 @@ fun ModelCatalogDialog(
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 } else {
                     IconButton(onClick = { refresh(force = true) }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh models")
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = stringResource(R.string.refresh_models)
+                        )
                     }
                 }
             }
@@ -950,17 +953,21 @@ fun ModelCatalogDialog(
                     SourceChip(snapshot.source)
                     snapshot.remoteError?.let {
                         Text(
-                            text = "Remote unavailable",
+                            text = stringResource(R.string.remote_unavailable),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.error
                         )
                     }
                 }
 
-                selectionWarning?.let {
+                if (selectionMissing) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = it,
+                        text = stringResource(
+                            R.string.model_not_in_catalog,
+                            currentModelId,
+                            catalogSourceLabel(snapshot.source)
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -972,7 +979,7 @@ fun ModelCatalogDialog(
                     onValueChange = { searchQuery = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    placeholder = { Text("Search models") },
+                    placeholder = { Text(stringResource(R.string.search_models)) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
                 )
 
@@ -992,7 +999,7 @@ fun ModelCatalogDialog(
                     if (filteredModels.isEmpty()) {
                         item {
                             Text(
-                                text = "No models match \"$searchQuery\"",
+                                text = stringResource(R.string.no_models_match, searchQuery),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(vertical = 12.dp)
@@ -1011,14 +1018,14 @@ fun ModelCatalogDialog(
                         onValueChange = { manualModelId = it },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
-                        placeholder = { Text("Custom model ID") }
+                        placeholder = { Text(stringResource(R.string.custom_model_id)) }
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     TextButton(
                         onClick = { if (manualModelId.isNotBlank()) onSelect(manualModelId.trim()) },
                         enabled = manualModelId.isNotBlank()
                     ) {
-                        Text("Use")
+                        Text(stringResource(R.string.use_model_id))
                     }
                 }
             }
@@ -1060,8 +1067,9 @@ private fun ModelCatalogRow(
                 )
             }
             model.capabilities.maxContextTokens?.let { tokens ->
+                val formatted = if (tokens >= 1_000_000L) "${tokens / 1_000_000}M" else "${tokens / 1000}K"
                 Text(
-                    text = "Context: ${tokens / 1000}K tokens",
+                    text = stringResource(R.string.context_tokens, formatted),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1072,24 +1080,47 @@ private fun ModelCatalogRow(
                 modifier = Modifier.padding(top = 4.dp)
             ) {
                 val caps = model.capabilities
-                CapabilityBadge(icon = Icons.Default.TextFields, text = "Text", isSupported = true)
                 if (caps.imageInput) {
-                    CapabilityBadge(icon = Icons.Default.Image, text = "Vision", isSupported = true)
+                    CapabilityBadge(
+                        icon = Icons.Default.Image,
+                        text = stringResource(R.string.supports_vision),
+                        isSupported = true
+                    )
                 }
                 if (caps.audioInput) {
-                    CapabilityBadge(icon = Icons.Default.Mic, text = "Audio", isSupported = true)
+                    CapabilityBadge(
+                        icon = Icons.Default.Mic,
+                        text = stringResource(R.string.supports_audio),
+                        isSupported = true
+                    )
                 }
                 if (caps.streaming) {
-                    CapabilityBadge(icon = Icons.Default.Stream, text = "Stream", isSupported = true)
+                    CapabilityBadge(
+                        icon = Icons.Default.Stream,
+                        text = stringResource(R.string.cap_stream),
+                        isSupported = true
+                    )
                 }
                 if (caps.toolCalling) {
-                    CapabilityBadge(icon = Icons.Default.Build, text = "Tools", isSupported = true)
+                    CapabilityBadge(
+                        icon = Icons.Default.Build,
+                        text = stringResource(R.string.cap_tools),
+                        isSupported = true
+                    )
                 }
                 if (caps.reasoning) {
-                    CapabilityBadge(icon = Icons.Default.Psychology, text = "Reasoning", isSupported = true)
+                    CapabilityBadge(
+                        icon = Icons.Default.Psychology,
+                        text = stringResource(R.string.cap_reasoning),
+                        isSupported = true
+                    )
                 }
                 if (caps.realtime) {
-                    CapabilityBadge(icon = Icons.Default.Bolt, text = "Realtime", isSupported = true)
+                    CapabilityBadge(
+                        icon = Icons.Default.Bolt,
+                        text = stringResource(R.string.cap_realtime),
+                        isSupported = true
+                    )
                 }
             }
         }
@@ -1097,21 +1128,28 @@ private fun ModelCatalogRow(
 }
 
 @Composable
+private fun catalogSourceLabel(source: com.example.rokidphone.ai.catalog.CatalogSource): String =
+    when (source) {
+        com.example.rokidphone.ai.catalog.CatalogSource.LIVE -> stringResource(R.string.source_live)
+        com.example.rokidphone.ai.catalog.CatalogSource.CACHED -> stringResource(R.string.source_cached)
+        com.example.rokidphone.ai.catalog.CatalogSource.FALLBACK -> stringResource(
+            R.string.source_fallback,
+            com.example.rokidphone.ai.catalog.FallbackModelCatalog.LAST_VERIFIED_DATE
+        )
+        com.example.rokidphone.ai.catalog.CatalogSource.MANUAL -> stringResource(R.string.source_manual)
+    }
+
+@Composable
 private fun SourceChip(source: com.example.rokidphone.ai.catalog.CatalogSource) {
-    val (label, color) = when (source) {
-        com.example.rokidphone.ai.catalog.CatalogSource.LIVE ->
-            "Live" to MaterialTheme.colorScheme.primaryContainer
-        com.example.rokidphone.ai.catalog.CatalogSource.CACHED ->
-            "Cached" to MaterialTheme.colorScheme.secondaryContainer
-        com.example.rokidphone.ai.catalog.CatalogSource.FALLBACK ->
-            "Fallback (verified ${com.example.rokidphone.ai.catalog.FallbackModelCatalog.LAST_VERIFIED_DATE})" to
-                MaterialTheme.colorScheme.tertiaryContainer
-        com.example.rokidphone.ai.catalog.CatalogSource.MANUAL ->
-            "Manual" to MaterialTheme.colorScheme.surfaceVariant
+    val color = when (source) {
+        com.example.rokidphone.ai.catalog.CatalogSource.LIVE -> MaterialTheme.colorScheme.primaryContainer
+        com.example.rokidphone.ai.catalog.CatalogSource.CACHED -> MaterialTheme.colorScheme.secondaryContainer
+        com.example.rokidphone.ai.catalog.CatalogSource.FALLBACK -> MaterialTheme.colorScheme.tertiaryContainer
+        com.example.rokidphone.ai.catalog.CatalogSource.MANUAL -> MaterialTheme.colorScheme.surfaceVariant
     }
     Surface(shape = MaterialTheme.shapes.small, color = color) {
         Text(
-            text = label,
+            text = catalogSourceLabel(source),
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
         )
@@ -1124,10 +1162,10 @@ private fun StatusChip(status: com.example.rokidphone.ai.catalog.ModelStatus) {
         com.example.rokidphone.ai.catalog.ModelStatus.STABLE -> Unit // no chip for the common case
         com.example.rokidphone.ai.catalog.ModelStatus.PREVIEW -> PreviewBadge()
         com.example.rokidphone.ai.catalog.ModelStatus.DEPRECATED -> SmallStatusChip(
-            "Deprecated", MaterialTheme.colorScheme.errorContainer
+            stringResource(R.string.status_deprecated), MaterialTheme.colorScheme.errorContainer
         )
         com.example.rokidphone.ai.catalog.ModelStatus.LEGACY -> SmallStatusChip(
-            "Legacy", MaterialTheme.colorScheme.surfaceVariant
+            stringResource(R.string.status_legacy), MaterialTheme.colorScheme.surfaceVariant
         )
     }
 }
@@ -1693,7 +1731,7 @@ fun CustomProviderSection(
             if (baseUrl.startsWith("http://")) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Warning: cleartext HTTP endpoint. Traffic (including any API key) is not encrypted. Use only for trusted local servers.",
+                    text = stringResource(R.string.custom_cleartext_warning),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -1703,7 +1741,7 @@ fun CustomProviderSection(
 
             // Wire protocol selector
             Text(
-                text = "Protocol",
+                text = stringResource(R.string.custom_protocol),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1712,12 +1750,12 @@ fun CustomProviderSection(
                 FilterChip(
                     selected = protocol == "chat_completions",
                     onClick = { onProtocolChange("chat_completions") },
-                    label = { Text("Chat Completions") }
+                    label = { Text(stringResource(R.string.protocol_chat_completions)) }
                 )
                 FilterChip(
                     selected = protocol == "responses",
                     onClick = { onProtocolChange("responses") },
-                    label = { Text("Responses") }
+                    label = { Text(stringResource(R.string.protocol_responses)) }
                 )
             }
 
@@ -1727,7 +1765,7 @@ fun CustomProviderSection(
             OutlinedTextField(
                 value = modelsPath,
                 onValueChange = onModelsPathChange,
-                label = { Text("Models endpoint path") },
+                label = { Text(stringResource(R.string.custom_models_path)) },
                 placeholder = { Text("models") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true

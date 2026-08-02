@@ -113,11 +113,43 @@
     <string name="no_speech_support">Без аудіо</string>
     <string name="no_vision_support">Без зору</string>
     <string name="preview_badge">Попередній перегляд</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">Налаштовано</string>
+    <string name="refresh_models">Оновити моделі</string>
+    <string name="remote_unavailable">Віддалений сервер недоступний</string>
+    <string name="search_models">Пошук моделей</string>
+    <string name="no_models_match">Немає моделей, що відповідають «%1$s»</string>
+    <string name="custom_model_id">Власний ID моделі</string>
+    <string name="use_model_id">Використати</string>
+    <string name="source_live">Онлайн</string>
+    <string name="source_cached">З кешу</string>
+    <string name="source_fallback">Резервний (перевірено %1$s)</string>
+    <string name="source_manual">Вручну</string>
+    <string name="status_deprecated">Застаріла</string>
+    <string name="status_legacy">Попередня</string>
+    <string name="context_tokens">Контекст: %1$s токенів</string>
+    <string name="cap_stream">Потік</string>
+    <string name="cap_tools">Інструменти</string>
+    <string name="cap_reasoning">Міркування</string>
+    <string name="cap_realtime">Реальний час</string>
+    <string name="model_not_in_catalog">Поточної моделі «%1$s» немає у списку моделей %2$s. Вона збережена й використовуватиметься.</string>
+    <string name="baidu_qianfan_api_key">Ключ API Qianfan (v2, рекомендовано)</string>
+    <string name="baidu_legacy_auth">Застаріла автентифікація</string>
+    <string name="baidu_legacy_auth_subtitle">Використовувати OAuth API Key + Secret Key (старі застосунки Qianfan)</string>
+    <string name="alibaba_region">Регіон</string>
+    <string name="alibaba_workspace_base_url">Базовий URL робочої області</string>
+    <string name="custom_cleartext_warning">Попередження: незашифрована HTTP-точка. Трафік (включно з будь-яким ключем API) не шифрується. Використовуйте лише для довірених локальних серверів.</string>
+    <string name="custom_protocol">Протокол</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Шлях endpoint моделей</string>
+    <string name="secure_storage_unavailable">Не вдалося ініціалізувати зашифроване сховище. Ключі API не будуть збережені на цьому пристрої.</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">Потрібен ключ API</string>
     <string name="api_key_not_set">Не налаштовано</string>
-    <string name="speech_service_not_configured">Сервіс розпізнавання мовлення не налаштовано. Налаштуйте ключ API Gemini, OpenAI, Groq або xAI.</string>
+    <string name="speech_service_not_configured">Сервіс розпізнавання мовлення не налаштовано. Налаштуйте ключ API Gemini, OpenAI або Groq.</string>
     <string name="api_key_setup_hint">Перейдіть до Налаштувань для налаштування ключів API. Додаток використовуватиме вбудований резервний сервіс до налаштування.</string>
     <string name="go_to_settings">Перейти до Налаштувань</string>
     <string name="later">Пізніше</string>

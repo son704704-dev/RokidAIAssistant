@@ -112,10 +112,42 @@
     <string name="supports_vision">Visión</string>
     <string name="no_speech_support">Sin audio</string>
     <string name="no_vision_support">Sin visión</string>    <string name="preview_badge">Vista previa</string>    
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">Configurado</string>
+    <string name="refresh_models">Actualizar modelos</string>
+    <string name="remote_unavailable">Remoto no disponible</string>
+    <string name="search_models">Buscar modelos</string>
+    <string name="no_models_match">Ningún modelo coincide con "%1$s"</string>
+    <string name="custom_model_id">ID de modelo personalizado</string>
+    <string name="use_model_id">Usar</string>
+    <string name="source_live">En vivo</string>
+    <string name="source_cached">En caché</string>
+    <string name="source_fallback">Respaldo (verificado %1$s)</string>
+    <string name="source_manual">Manual</string>
+    <string name="status_deprecated">Obsoleto</string>
+    <string name="status_legacy">Heredado</string>
+    <string name="context_tokens">Contexto: %1$s tokens</string>
+    <string name="cap_stream">Stream</string>
+    <string name="cap_tools">Herramientas</string>
+    <string name="cap_reasoning">Razonamiento</string>
+    <string name="cap_realtime">Tiempo real</string>
+    <string name="model_not_in_catalog">El modelo actual "%1$s" no está en la lista de modelos de %2$s. Se conservará y seguirá usándose.</string>
+    <string name="baidu_qianfan_api_key">Clave API de Qianfan (v2, recomendada)</string>
+    <string name="baidu_legacy_auth">Autenticación heredada</string>
+    <string name="baidu_legacy_auth_subtitle">Usar OAuth con API Key + Secret Key (apps Qianfan antiguas)</string>
+    <string name="alibaba_region">Región</string>
+    <string name="alibaba_workspace_base_url">URL base del workspace</string>
+    <string name="custom_cleartext_warning">Advertencia: endpoint HTTP sin cifrar. El tráfico (incluida cualquier clave API) no está cifrado. Úselo solo para servidores locales de confianza.</string>
+    <string name="custom_protocol">Protocolo</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Ruta del endpoint de modelos</string>
+    <string name="secure_storage_unavailable">No se pudo inicializar el almacenamiento cifrado. Las claves API no se guardarán en este dispositivo.</string>
     <!-- API Key Validation -->
     <string name="api_key_required">Se requiere clave API</string>
     <string name="api_key_not_set">No configurado</string>
-    <string name="speech_service_not_configured">Servicio de reconocimiento de voz no configurado. Configure la clave API de Gemini, OpenAI, Groq o xAI.</string>
+    <string name="speech_service_not_configured">Servicio de reconocimiento de voz no configurado. Configure la clave API de Gemini, OpenAI o Groq.</string>
     <string name="api_key_setup_hint">Vaya a Configuración para configurar sus claves API. La aplicación usará el servicio de respaldo integrado hasta que se configure.</string>
     <string name="go_to_settings">Ir a Configuración</string>
     <string name="later">Más tarde</string>

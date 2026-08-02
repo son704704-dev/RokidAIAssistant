@@ -244,11 +244,43 @@
     <string name="no_speech_support">ไม่รองรับเสียง</string>
     <string name="no_vision_support">ไม่รองรับภาพ</string>
     <string name="preview_badge">ตัวอย่าง</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">ตั้งค่าแล้ว</string>
+    <string name="refresh_models">รีเฟรชโมเดล</string>
+    <string name="remote_unavailable">รีโมตไม่พร้อมใช้งาน</string>
+    <string name="search_models">ค้นหาโมเดล</string>
+    <string name="no_models_match">ไม่มีโมเดลที่ตรงกับ "%1$s"</string>
+    <string name="custom_model_id">ID โมเดลที่กำหนดเอง</string>
+    <string name="use_model_id">ใช้</string>
+    <string name="source_live">สด</string>
+    <string name="source_cached">แคช</string>
+    <string name="source_fallback">สำรอง (ตรวจสอบเมื่อ %1$s)</string>
+    <string name="source_manual">ด้วยตนเอง</string>
+    <string name="status_deprecated">เลิกใช้แล้ว</string>
+    <string name="status_legacy">รุ่นเก่า</string>
+    <string name="context_tokens">บริบท: %1$s โทเคน</string>
+    <string name="cap_stream">สตรีม</string>
+    <string name="cap_tools">เครื่องมือ</string>
+    <string name="cap_reasoning">การให้เหตุผล</string>
+    <string name="cap_realtime">เรียลไทม์</string>
+    <string name="model_not_in_catalog">โมเดลปัจจุบัน "%1$s" ไม่มีในรายการโมเดลของ %2$s ระบบจะเก็บและใช้งานต่อไป</string>
+    <string name="baidu_qianfan_api_key">คีย์ API Qianfan (v2 แนะนำ)</string>
+    <string name="baidu_legacy_auth">การยืนยันตัวตนแบบเดิม</string>
+    <string name="baidu_legacy_auth_subtitle">ใช้ API Key + Secret Key OAuth (แอป Qianfan รุ่นเก่า)</string>
+    <string name="alibaba_region">ภูมิภาค</string>
+    <string name="alibaba_workspace_base_url">URL พื้นฐานของ Workspace</string>
+    <string name="custom_cleartext_warning">คำเตือน: เอนด์พอยต์ HTTP แบบไม่เข้ารหัส ข้อมูล (รวมถึงคีย์ API) จะไม่ถูกเข้ารหัส ใช้เฉพาะกับเซิร์ฟเวอร์โลคัลที่เชื่อถือได้</string>
+    <string name="custom_protocol">โปรโตคอล</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">เส้นทางเอนด์พอยต์ Models</string>
+    <string name="secure_storage_unavailable">ไม่สามารถเริ่มที่เก็บข้อมูลแบบเข้ารหัสได้ คีย์ API จะไม่ถูกบันทึกบนอุปกรณ์นี้</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">ต้องการคีย์ API</string>
     <string name="api_key_not_set">ยังไม่ได้กำหนดค่า</string>
-    <string name="speech_service_not_configured">บริการรู้จำเสียงยังไม่ได้กำหนดค่า กรุณากำหนดค่าคีย์ API Gemini, OpenAI, Groq หรือ xAI</string>
+    <string name="speech_service_not_configured">บริการรู้จำเสียงยังไม่ได้กำหนดค่า กรุณากำหนดค่าคีย์ API Gemini, OpenAI หรือ Groq</string>
     <string name="api_key_setup_hint">ไปที่การตั้งค่าเพื่อกำหนดค่าคีย์ API แอปจะใช้บริการสำรองในตัวจนกว่าจะกำหนดค่า</string>
     <string name="go_to_settings">ไปที่การตั้งค่า</string>
     <string name="later">ภายหลัง</string>

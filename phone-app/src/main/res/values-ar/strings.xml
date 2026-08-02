@@ -113,11 +113,43 @@
     <string name="no_speech_support">لا يدعم الصوت</string>
     <string name="no_vision_support">لا يدعم الرؤية</string>
     <string name="preview_badge">معاينة</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">تم الإعداد</string>
+    <string name="refresh_models">تحديث النماذج</string>
+    <string name="remote_unavailable">البعيد غير متاح</string>
+    <string name="search_models">البحث في النماذج</string>
+    <string name="no_models_match">لا توجد نماذج تطابق "%1$s"</string>
+    <string name="custom_model_id">معرّف نموذج مخصص</string>
+    <string name="use_model_id">استخدام</string>
+    <string name="source_live">مباشر</string>
+    <string name="source_cached">مخزن مؤقتًا</string>
+    <string name="source_fallback">احتياطي (تم التحقق %1$s)</string>
+    <string name="source_manual">يدوي</string>
+    <string name="status_deprecated">مهمل</string>
+    <string name="status_legacy">قديم</string>
+    <string name="context_tokens">السياق: %1$s رمزًا</string>
+    <string name="cap_stream">بث</string>
+    <string name="cap_tools">أدوات</string>
+    <string name="cap_reasoning">استدلال</string>
+    <string name="cap_realtime">فوري</string>
+    <string name="model_not_in_catalog">النموذج الحالي "%1$s" غير موجود في قائمة نماذج %2$s. سيتم الاحتفاظ به واستخدامه.</string>
+    <string name="baidu_qianfan_api_key">مفتاح Qianfan API (v2، موصى به)</string>
+    <string name="baidu_legacy_auth">مصادقة قديمة</string>
+    <string name="baidu_legacy_auth_subtitle">استخدام API Key + Secret Key OAuth (تطبيقات Qianfan الأقدم)</string>
+    <string name="alibaba_region">المنطقة</string>
+    <string name="alibaba_workspace_base_url">عنوان URL الأساسي لـ Workspace</string>
+    <string name="custom_cleartext_warning">تحذير: نقطة نهاية HTTP غير مشفرة. حركة المرور (بما في ذلك أي مفتاح API) غير مشفرة. استخدم فقط للخوادم المحلية الموثوقة.</string>
+    <string name="custom_protocol">البروتوكول</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">مسار نقطة نهاية Models</string>
+    <string name="secure_storage_unavailable">تعذر تهيئة التخزين المشفر. لن يتم حفظ مفاتيح API على هذا الجهاز.</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">مفتاح API مطلوب</string>
     <string name="api_key_not_set">غير مُعد</string>
-    <string name="speech_service_not_configured">لم يتم إعداد خدمة التعرف على الصوت. يرجى إعداد مفتاح API لـ Gemini أو OpenAI أو Groq أو xAI.</string>
+    <string name="speech_service_not_configured">لم يتم إعداد خدمة التعرف على الصوت. يرجى إعداد مفتاح API لـ Gemini أو OpenAI أو Groq.</string>
     <string name="api_key_setup_hint">انتقل إلى الإعدادات لإعداد مفاتيح API. سيستخدم التطبيق الخدمة الاحتياطية حتى يتم الإعداد.</string>
     <string name="go_to_settings">انتقل إلى الإعدادات</string>
     <string name="later">لاحقاً</string>

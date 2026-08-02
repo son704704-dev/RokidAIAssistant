@@ -113,11 +113,43 @@
     <string name="no_speech_support">Без аудио</string>
     <string name="no_vision_support">Без зрения</string>
     <string name="preview_badge">Предварительный просмотр</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">Настроено</string>
+    <string name="refresh_models">Обновить модели</string>
+    <string name="remote_unavailable">Удалённый сервер недоступен</string>
+    <string name="search_models">Поиск моделей</string>
+    <string name="no_models_match">Нет моделей, соответствующих «%1$s»</string>
+    <string name="custom_model_id">Пользовательский ID модели</string>
+    <string name="use_model_id">Использовать</string>
+    <string name="source_live">Онлайн</string>
+    <string name="source_cached">Из кэша</string>
+    <string name="source_fallback">Резервный (проверено %1$s)</string>
+    <string name="source_manual">Вручную</string>
+    <string name="status_deprecated">Устарела</string>
+    <string name="status_legacy">Прежняя</string>
+    <string name="context_tokens">Контекст: %1$s токенов</string>
+    <string name="cap_stream">Поток</string>
+    <string name="cap_tools">Инструменты</string>
+    <string name="cap_reasoning">Рассуждение</string>
+    <string name="cap_realtime">Реальное время</string>
+    <string name="model_not_in_catalog">Текущая модель «%1$s» отсутствует в списке моделей %2$s. Она сохранена и будет использоваться.</string>
+    <string name="baidu_qianfan_api_key">Ключ API Qianfan (v2, рекомендуется)</string>
+    <string name="baidu_legacy_auth">Устаревшая аутентификация</string>
+    <string name="baidu_legacy_auth_subtitle">Использовать OAuth API Key + Secret Key (старые приложения Qianfan)</string>
+    <string name="alibaba_region">Регион</string>
+    <string name="alibaba_workspace_base_url">Базовый URL рабочей области</string>
+    <string name="custom_cleartext_warning">Предупреждение: незашифрованный HTTP-эндпоинт. Трафик (включая любой ключ API) не шифруется. Используйте только для доверенных локальных серверов.</string>
+    <string name="custom_protocol">Протокол</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Путь эндпоинта моделей</string>
+    <string name="secure_storage_unavailable">Не удалось инициализировать зашифрованное хранилище. Ключи API не будут сохранены на этом устройстве.</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">Требуется ключ API</string>
     <string name="api_key_not_set">Не настроено</string>
-    <string name="speech_service_not_configured">Сервис распознавания речи не настроен. Настройте ключ API Gemini, OpenAI, Groq или xAI.</string>
+    <string name="speech_service_not_configured">Сервис распознавания речи не настроен. Настройте ключ API Gemini, OpenAI или Groq.</string>
     <string name="api_key_setup_hint">Перейдите в Настройки для настройки ключей API. Приложение будет использовать встроенный резервный сервис до настройки.</string>
     <string name="go_to_settings">Перейти в Настройки</string>
     <string name="later">Позже</string>

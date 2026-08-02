@@ -113,11 +113,43 @@
     <string name="no_speech_support">오디오 미지원</string>
     <string name="no_vision_support">비전 미지원</string>
     <string name="preview_badge">미리보기</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">설정됨</string>
+    <string name="refresh_models">모델 새로고침</string>
+    <string name="remote_unavailable">원격 사용 불가</string>
+    <string name="search_models">모델 검색</string>
+    <string name="no_models_match">"%1$s"와 일치하는 모델이 없습니다</string>
+    <string name="custom_model_id">사용자 지정 모델 ID</string>
+    <string name="use_model_id">사용</string>
+    <string name="source_live">라이브</string>
+    <string name="source_cached">캐시됨</string>
+    <string name="source_fallback">폴백(검증일 %1$s)</string>
+    <string name="source_manual">수동</string>
+    <string name="status_deprecated">지원 중단</string>
+    <string name="status_legacy">레거시</string>
+    <string name="context_tokens">컨텍스트: %1$s 토큰</string>
+    <string name="cap_stream">스트림</string>
+    <string name="cap_tools">도구</string>
+    <string name="cap_reasoning">추론</string>
+    <string name="cap_realtime">실시간</string>
+    <string name="model_not_in_catalog">현재 모델 "%1$s"이(가) %2$s 모델 목록에 없습니다. 유지되며 계속 사용됩니다.</string>
+    <string name="baidu_qianfan_api_key">Qianfan API 키(v2, 권장)</string>
+    <string name="baidu_legacy_auth">레거시 인증</string>
+    <string name="baidu_legacy_auth_subtitle">API Key + Secret Key OAuth 사용(이전 Qianfan 앱)</string>
+    <string name="alibaba_region">리전</string>
+    <string name="alibaba_workspace_base_url">Workspace 기본 URL</string>
+    <string name="custom_cleartext_warning">경고: 평문 HTTP 엔드포인트입니다. 트래픽(API 키 포함)이 암호화되지 않습니다. 신뢰할 수 있는 로컬 서버에만 사용하세요.</string>
+    <string name="custom_protocol">프로토콜</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Models 엔드포인트 경로</string>
+    <string name="secure_storage_unavailable">암호화된 저장소를 초기화할 수 없습니다. API 키는 이 기기에 저장되지 않습니다.</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">API 키 필요</string>
     <string name="api_key_not_set">설정되지 않음</string>
-    <string name="speech_service_not_configured">음성 인식 서비스가 설정되지 않았습니다. Gemini, OpenAI, Groq 또는 xAI API 키를 설정하세요.</string>
+    <string name="speech_service_not_configured">음성 인식 서비스가 설정되지 않았습니다. Gemini, OpenAI 또는 Groq API 키를 설정하세요.</string>
     <string name="api_key_setup_hint">설정에서 API 키를 설정하세요. 설정 전까지 내장 폴백 서비스를 사용합니다.</string>
     <string name="go_to_settings">설정으로 이동</string>
     <string name="later">나중에</string>

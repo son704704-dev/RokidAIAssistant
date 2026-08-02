@@ -113,11 +113,43 @@
     <string name="no_speech_support">Nessun audio</string>
     <string name="no_vision_support">Nessuna visione</string>
     <string name="preview_badge">Anteprima</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">Configurato</string>
+    <string name="refresh_models">Aggiorna modelli</string>
+    <string name="remote_unavailable">Remoto non disponibile</string>
+    <string name="search_models">Cerca modelli</string>
+    <string name="no_models_match">Nessun modello corrisponde a "%1$s"</string>
+    <string name="custom_model_id">ID modello personalizzato</string>
+    <string name="use_model_id">Usa</string>
+    <string name="source_live">Live</string>
+    <string name="source_cached">In cache</string>
+    <string name="source_fallback">Fallback (verificato il %1$s)</string>
+    <string name="source_manual">Manuale</string>
+    <string name="status_deprecated">Deprecato</string>
+    <string name="status_legacy">Legacy</string>
+    <string name="context_tokens">Contesto: %1$s token</string>
+    <string name="cap_stream">Stream</string>
+    <string name="cap_tools">Strumenti</string>
+    <string name="cap_reasoning">Ragionamento</string>
+    <string name="cap_realtime">Tempo reale</string>
+    <string name="model_not_in_catalog">Il modello attuale "%1$s" non è nell\'elenco dei modelli %2$s. Verrà mantenuto e utilizzato comunque.</string>
+    <string name="baidu_qianfan_api_key">Chiave API Qianfan (v2, consigliata)</string>
+    <string name="baidu_legacy_auth">Autenticazione legacy</string>
+    <string name="baidu_legacy_auth_subtitle">Usa OAuth API Key + Secret Key (vecchie app Qianfan)</string>
+    <string name="alibaba_region">Regione</string>
+    <string name="alibaba_workspace_base_url">URL base del workspace</string>
+    <string name="custom_cleartext_warning">Avviso: endpoint HTTP in chiaro. Il traffico (inclusa qualsiasi chiave API) non è crittografato. Usare solo per server locali attendibili.</string>
+    <string name="custom_protocol">Protocollo</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Percorso endpoint modelli</string>
+    <string name="secure_storage_unavailable">Impossibile inizializzare l\'archivio crittografato. Le chiavi API non verranno salvate su questo dispositivo.</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">Chiave API richiesta</string>
     <string name="api_key_not_set">Non configurato</string>
-    <string name="speech_service_not_configured">Nessun servizio di riconoscimento vocale configurato. Configura la chiave API Gemini, OpenAI, Groq o xAI.</string>
+    <string name="speech_service_not_configured">Nessun servizio di riconoscimento vocale configurato. Configura la chiave API Gemini, OpenAI o Groq.</string>
     <string name="api_key_setup_hint">Vai alle Impostazioni per configurare le chiavi API. L\'app utilizzerà il servizio di fallback integrato fino alla configurazione.</string>
     <string name="go_to_settings">Vai alle Impostazioni</string>
     <string name="later">Più tardi</string>

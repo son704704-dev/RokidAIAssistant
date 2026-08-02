@@ -125,8 +125,7 @@ class SettingsRepository(private val context: Context) {
             "Secure storage unavailable; settings will be kept in memory only (never persisted in plaintext)",
             e
         )
-        _secureStorageError.value =
-            "Encrypted storage could not be initialized. API keys will not be saved on this device."
+        _secureStorageError.value = context.getString(R.string.secure_storage_unavailable)
         InMemorySharedPreferences()
     }
     

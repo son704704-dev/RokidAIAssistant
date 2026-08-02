@@ -113,11 +113,43 @@
     <string name="no_speech_support">不支援音訊</string>
     <string name="no_vision_support">不支援視覺</string>
     <string name="preview_badge">預覽</string>
+
+    <!-- Model catalog picker / provider settings -->
+    <string name="configured">已設定</string>
+    <string name="refresh_models">重新整理模型</string>
+    <string name="remote_unavailable">遠端無法連線</string>
+    <string name="search_models">搜尋模型</string>
+    <string name="no_models_match">沒有符合「%1$s」的模型</string>
+    <string name="custom_model_id">自訂模型 ID</string>
+    <string name="use_model_id">使用</string>
+    <string name="source_live">即時</string>
+    <string name="source_cached">快取</string>
+    <string name="source_fallback">Fallback(驗證日期 %1$s)</string>
+    <string name="source_manual">手動</string>
+    <string name="status_deprecated">已淘汰</string>
+    <string name="status_legacy">舊版</string>
+    <string name="context_tokens">Context:%1$s tokens</string>
+    <string name="cap_stream">串流</string>
+    <string name="cap_tools">工具</string>
+    <string name="cap_reasoning">推理</string>
+    <string name="cap_realtime">即時</string>
+    <string name="model_not_in_catalog">目前模型「%1$s」不在 %2$s 模型清單中。系統會保留並繼續使用它。</string>
+    <string name="baidu_qianfan_api_key">Qianfan API 金鑰(v2,建議使用)</string>
+    <string name="baidu_legacy_auth">舊版驗證</string>
+    <string name="baidu_legacy_auth_subtitle">使用 API Key + Secret Key OAuth(舊版千帆應用)</string>
+    <string name="alibaba_region">區域</string>
+    <string name="alibaba_workspace_base_url">Workspace 基礎 URL</string>
+    <string name="custom_cleartext_warning">警告:明文 HTTP 端點。流量(包含任何 API 金鑰)未加密。僅用於受信任的本機伺服器。</string>
+    <string name="custom_protocol">協定</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Models 端點路徑</string>
+    <string name="secure_storage_unavailable">無法初始化加密儲存。API 金鑰將不會儲存在此裝置上。</string>
     
     <!-- API Key Validation -->
     <string name="api_key_required">需要 API 金鑰</string>
     <string name="api_key_not_set">尚未設定</string>
-    <string name="speech_service_not_configured">未設定語音識別服務。請設定 Gemini、OpenAI、Groq 或 xAI API 金鑰。</string>
+    <string name="speech_service_not_configured">未設定語音識別服務。請設定 Gemini、OpenAI 或 Groq API 金鑰。</string>
     <string name="api_key_setup_hint">前往設定配置您的 API 金鑰。在設定完成前，應用程式將使用內建的備用服務。</string>
     <string name="go_to_settings">前往設定</string>
     <string name="later">稍後</string>

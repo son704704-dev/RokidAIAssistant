@@ -113,11 +113,51 @@
     <string name="no_speech_support">No Audio</string>
     <string name="no_vision_support">No Vision</string>
     <string name="preview_badge">Preview</string>
-    
+
+    <!-- Model catalog picker -->
+    <string name="configured">Configured</string>
+    <string name="refresh_models">Refresh models</string>
+    <string name="remote_unavailable">Remote unavailable</string>
+    <string name="search_models">Search models</string>
+    <string name="no_models_match">No models match \"%1$s\"</string>
+    <string name="custom_model_id">Custom model ID</string>
+    <string name="use_model_id">Use</string>
+    <string name="source_live">Live</string>
+    <string name="source_cached">Cached</string>
+    <string name="source_fallback">Fallback (verified %1$s)</string>
+    <string name="source_manual">Manual</string>
+    <string name="status_deprecated">Deprecated</string>
+    <string name="status_legacy">Legacy</string>
+    <string name="context_tokens">Context: %1$s tokens</string>
+    <string name="cap_stream">Stream</string>
+    <string name="cap_tools">Tools</string>
+    <string name="cap_reasoning">Reasoning</string>
+    <string name="cap_realtime">Realtime</string>
+    <string name="model_not_in_catalog">Current model \"%1$s\" is not in the %2$s model list. It is kept and will still be used.</string>
+
+    <!-- Baidu Qianfan v2 -->
+    <string name="baidu_qianfan_api_key">Qianfan API Key (v2, recommended)</string>
+    <string name="baidu_legacy_auth">Legacy authentication</string>
+    <string name="baidu_legacy_auth_subtitle">Use API Key + Secret Key OAuth (older Qianfan apps)</string>
+
+    <!-- Alibaba region -->
+    <string name="alibaba_region">Region</string>
+    <string name="alibaba_workspace_base_url">Workspace base URL</string>
+
+    <!-- Custom endpoint -->
+    <string name="custom_cleartext_warning">Warning: cleartext HTTP endpoint. Traffic (including any API key) is not encrypted. Use only for trusted local servers.</string>
+    <string name="custom_protocol">Protocol</string>
+    <string name="protocol_chat_completions">Chat Completions</string>
+    <string name="protocol_responses">Responses</string>
+    <string name="custom_models_path">Models endpoint path</string>
+
+    <!-- Secure storage -->
+    <string name="secure_storage_unavailable">Encrypted storage could not be initialized. API keys will not be saved on this device.</string>
+
     <!-- API Key Validation -->
     <string name="api_key_required">API Key Required</string>
     <string name="api_key_not_set">is not configured</string>
-    <string name="speech_service_not_configured">No speech recognition service configured. Please set up Gemini, OpenAI, Groq, or xAI API Key.</string>
+    <string name="speech_service_not_configured">No speech recognition service configured. Please set up Gemini, OpenAI, or Groq API Key.</string>
     <string name="api_key_setup_hint">Go to Settings to configure your API keys. The app will use the built-in fallback service until configured.</string>
     <string name="go_to_settings">Go to Settings</string>
     <string name="later">Later</string>
