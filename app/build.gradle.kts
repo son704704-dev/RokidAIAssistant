@@ -14,6 +14,20 @@ if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
 
+// Release signing credentials: local.properties first (local dev), then env vars (CI, e.g. GitHub Actions)
+fun releaseSigningProp(propKey: String, envKey: String): String? =
+    localProperties.getProperty(propKey)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(envKey)?.takeIf { it.isNotBlank() }
+
+val releaseStoreFile = releaseSigningProp("RELEASE_STORE_FILE", "RELEASE_STORE_FILE")
+val releaseStorePassword = releaseSigningProp("RELEASE_STORE_PASSWORD", "RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningProp("RELEASE_KEY_ALIAS", "RELEASE_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningProp("RELEASE_KEY_PASSWORD", "RELEASE_KEY_PASSWORD")
+val hasReleaseSigningConfig = !releaseStoreFile.isNullOrBlank() &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank()
+
 android {
     namespace = "com.example.rokidaiassistant"
     compileSdk = 36
@@ -35,6 +49,17 @@ android {
             "\"${localProperties.getProperty("OPENAI_API_KEY", "")}\"")
     }
 
+    signingConfigs {
+        if (hasReleaseSigningConfig) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -42,6 +67,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     
