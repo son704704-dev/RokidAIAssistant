@@ -94,8 +94,10 @@ class StreamingServiceTest {
 
         val toolCalls = events.filterIsInstance<AiStreamEvent.ToolCallDelta>()
         assertThat(toolCalls).hasSize(2)
+        assertThat(toolCalls[0].index).isEqualTo(0)
         assertThat(toolCalls[0].name).isEqualTo("get_weather")
         assertThat(toolCalls[0].argumentsDelta).isEqualTo("{\"city\":")
+        assertThat(toolCalls[1].index).isEqualTo(0)
         assertThat(toolCalls[1].argumentsDelta).isEqualTo("\"Taipei\"}")
     }
 

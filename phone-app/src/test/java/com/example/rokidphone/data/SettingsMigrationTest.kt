@@ -44,11 +44,12 @@ class SettingsMigrationTest {
         val migrated = settings.migrateLegacyModelIds()
 
         assertThat(migrated.aiModelId).isEqualTo("deepseek-v4-flash")
-        // A manually kept legacy ID on another provider is untouched.
-        val untouched = settings.copy(
+        // The migration map is a global id→id mapping: legacy IDs are migrated
+        // on every provider, not only DeepSeek.
+        val migratedOther = settings.copy(
             providerModelIds = mapOf(AiProvider.OPENAI.name to "deepseek-chat")
         ).migrateLegacyModelIds()
-        assertThat(untouched.providerModelIds[AiProvider.OPENAI.name]).isEqualTo("deepseek-chat")
+        assertThat(migratedOther.providerModelIds[AiProvider.OPENAI.name]).isEqualTo("deepseek-v4-flash")
     }
 
     @Test

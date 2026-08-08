@@ -1,5 +1,6 @@
 package com.example.rokidphone.ai.catalog
 
+import android.util.Log
 import com.example.rokidphone.data.AiProvider
 import org.json.JSONObject
 
@@ -16,7 +17,8 @@ object ModelCatalogParsers {
 
     /** ID fragments of known non-chat model families on OpenAI-style model lists. */
     private val openAiStyleExclusions = listOf(
-        "whisper", "tts", "dall-e", "text-embedding", "embedding", "moderation",
+        // NOTE: "text-embedding" was removed — it is already subsumed by "embedding".
+        "whisper", "tts", "dall-e", "embedding", "moderation",
         "davinci", "babbage", "realtime", "transcribe", "audio", "image",
         "playai", "guard", "safety", "rerank", "veo", "imagen", "imagine", "voice"
     )
@@ -30,13 +32,20 @@ object ModelCatalogParsers {
         provider: AiProvider,
         format: CatalogFormat,
         body: String
-    ): List<ModelInfo> = when (format) {
-        CatalogFormat.OPENAI_STYLE, CatalogFormat.BAIDU_QIANFAN_V2 ->
-            parseOpenAiStyle(provider, body)
-        CatalogFormat.GEMINI -> parseGemini(provider, body)
-        CatalogFormat.ANTHROPIC -> parseAnthropic(provider, body)
-        CatalogFormat.MISTRAL -> parseMistral(provider, body)
-        CatalogFormat.NONE -> emptyList()
+    ): List<ModelInfo> = runCatching {
+        when (format) {
+            CatalogFormat.OPENAI_STYLE, CatalogFormat.BAIDU_QIANFAN_V2 ->
+                parseOpenAiStyle(provider, body)
+            CatalogFormat.GEMINI -> parseGemini(provider, body)
+            CatalogFormat.ANTHROPIC -> parseAnthropic(provider, body)
+            CatalogFormat.MISTRAL -> parseMistral(provider, body)
+            CatalogFormat.NONE -> emptyList()
+        }
+    }.getOrElse {
+        // Malformed/truncated/non-JSON payloads (HTML error pages, proxies)
+        // must not crash the catalog refresh; treat them as "no models".
+        Log.w(TAG, "Failed to parse model list for $provider", it)
+        emptyList()
     }
 
     // ==================== OpenAI-style ====================
@@ -68,9 +77,10 @@ object ModelCatalogParsers {
         val result = mutableListOf<ModelInfo>()
         for (i in 0 until models.length()) {
             val obj = models.optJSONObject(i) ?: continue
-            // "name" is "models/<id>"
+            // "name" is a resource path such as "models/<id>" or
+            // "tunedModels/<id>"; only the last segment is the request ID.
             val rawName = obj.optString("name")
-            val id = rawName.removePrefix("models/").takeIf { it.isNotBlank() } ?: continue
+            val id = rawName.substringAfterLast('/').takeIf { it.isNotBlank() } ?: continue
             if (isExcludedNonChat(id, geminiExclusions)) continue
 
             val methods = mutableListOf<String>()
@@ -98,7 +108,7 @@ object ModelCatalogParsers {
                 capabilities = caps,
                 status = if (id.contains("preview") || id.contains("-exp")) ModelStatus.PREVIEW else ModelStatus.STABLE,
                 source = CatalogSource.LIVE,
-                description = obj.optString("description").take(160)
+                description = obj.optString("description").takeIf { it.isNotBlank() }?.take(160) ?: ""
             )
         }
         return result
@@ -112,15 +122,26 @@ object ModelCatalogParsers {
         for (i in 0 until data.length()) {
             val obj = data.optJSONObject(i) ?: continue
             val id = obj.optString("id").takeIf { it.isNotBlank() } ?: continue
-            // Prefer live capability metadata when Anthropic returns it.
+            // Prefer live capability metadata when Anthropic returns it. Only
+            // fields actually present are overridden; absent keys keep the
+            // fallback/provider-default values (optBoolean would report false).
             val liveCaps = obj.optJSONObject("capabilities")?.let { caps ->
-                ModelCapabilities(
-                    imageInput = caps.optJSONObject("image_input")?.optBoolean("supported") ?: caps.optBoolean("image_input"),
-                    streaming = true,
-                    toolCalling = caps.optJSONObject("tool_use")?.optBoolean("supported") ?: true,
-                    reasoning = caps.optJSONObject("extended_thinking")?.optBoolean("supported")
-                        ?: caps.optBoolean("extended_thinking"),
+                val base = ModelCapabilityResolver.resolve(provider, id)
+                base.copy(
+                    imageInput = if (caps.has("image_input")) {
+                        caps.optJSONObject("image_input")?.optBoolean("supported")
+                            ?: caps.optBoolean("image_input")
+                    } else base.imageInput,
+                    toolCalling = if (caps.has("tool_use")) {
+                        caps.optJSONObject("tool_use")?.optBoolean("supported")
+                            ?: caps.optBoolean("tool_use")
+                    } else base.toolCalling,
+                    reasoning = if (caps.has("extended_thinking")) {
+                        caps.optJSONObject("extended_thinking")?.optBoolean("supported")
+                            ?: caps.optBoolean("extended_thinking")
+                    } else base.reasoning,
                     maxContextTokens = obj.optLong("max_input_tokens").takeIf { it > 0 }
+                        ?: base.maxContextTokens
                 )
             }
             result += ModelInfo(
@@ -148,15 +169,20 @@ object ModelCatalogParsers {
             // capabilities are independent and never imply chat support.
             if (capsObj != null && !capsObj.optBoolean("completion_chat", true)) continue
 
+            // Only fields actually present are overridden; absent keys keep the
+            // fallback/provider-default values (optBoolean would report false).
             val liveCaps = capsObj?.let { caps ->
-                ModelCapabilities(
-                    imageInput = caps.optBoolean("vision"),
-                    audioInput = caps.optJSONObject("audio")?.optBoolean("input") ?: caps.optBoolean("audio_input"),
-                    streaming = true,
-                    toolCalling = caps.optBoolean("function_calling"),
-                    structuredOutput = caps.optBoolean("structured_output"),
-                    reasoning = caps.optBoolean("reasoning"),
+                val base = ModelCapabilityResolver.resolve(provider, id)
+                base.copy(
+                    imageInput = if (caps.has("vision")) caps.optBoolean("vision") else base.imageInput,
+                    audioInput = if (caps.has("audio") || caps.has("audio_input")) {
+                        caps.optJSONObject("audio")?.optBoolean("input") ?: caps.optBoolean("audio_input")
+                    } else base.audioInput,
+                    toolCalling = if (caps.has("function_calling")) caps.optBoolean("function_calling") else base.toolCalling,
+                    structuredOutput = if (caps.has("structured_output")) caps.optBoolean("structured_output") else base.structuredOutput,
+                    reasoning = if (caps.has("reasoning")) caps.optBoolean("reasoning") else base.reasoning,
                     maxContextTokens = obj.optLong("max_context_length").takeIf { it > 0 }
+                        ?: base.maxContextTokens
                 )
             }
             result += ModelInfo(
@@ -166,7 +192,7 @@ object ModelCatalogParsers {
                 capabilities = ModelCapabilityResolver.resolve(provider, id, liveCaps),
                 status = ModelStatus.STABLE,
                 source = CatalogSource.LIVE,
-                description = obj.optString("description").take(160)
+                description = obj.optString("description").takeIf { it.isNotBlank() }?.take(160) ?: ""
             )
         }
         return result
@@ -176,4 +202,6 @@ object ModelCatalogParsers {
         val lower = id.lowercase()
         return exclusions.any { lower.contains(it) }
     }
+
+    private const val TAG = "ModelCatalogParsers"
 }

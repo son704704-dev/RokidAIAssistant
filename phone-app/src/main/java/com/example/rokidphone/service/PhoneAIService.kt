@@ -34,8 +34,6 @@ import com.example.rokidphone.service.photo.PhotoRepository
 import com.example.rokidphone.service.photo.ReceivedPhoto
 import com.rokid.cxr.client.utils.ValueUtil
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 
 /**
  * Phone AI Service
@@ -51,17 +49,35 @@ class PhoneAIService : Service() {
     
     companion object {
         private const val TAG = "PhoneAIService"
+        
+        // Pre-compiled patterns for cleanMarkdown (compiled once, not per call)
+        private val boldAsteriskRegex = Regex("\\*\\*(.+?)\\*\\*")
+        private val italicAsteriskRegex = Regex("(?<![\\w*])\\*(.+?)\\*(?![\\w*])")
+        private val boldUnderscoreRegex = Regex("(?<![\\w])__(.+?)__(?![\\w])")
+        private val italicUnderscoreRegex = Regex("(?<![\\w])_(.+?)_(?![\\w])")
+        private val headerRegex = Regex("^#{1,6}\\s*", RegexOption.MULTILINE)
+        private val codeBlockRegex = Regex("```[\\s\\S]*?```")
+        private val inlineCodeRegex = Regex("`(.+?)`")
+        private val linkRegex = Regex("\\[(.+?)]\\(.+?\\)")
+        private val bulletRegex = Regex("^[\\-*+]\\s+", RegexOption.MULTILINE)
+        private val numberedListRegex = Regex("^\\d+\\.\\s+", RegexOption.MULTILINE)
+        private val extraNewlinesRegex = Regex("\\n{3,}")
     }
     
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
     // AI service (supports multiple providers)
+    // Hot-swapped from the settings collector while other coroutines read them:
+    // @Volatile gives visibility guarantees for the swap.
+    @Volatile
     private var aiService: AiServiceProvider? = null
     
     // Speech recognition service (may differ from chat service)
+    @Volatile
     private var speechService: AiServiceProvider? = null
     
     // Dedicated STT service (for specialized STT providers like Deepgram, Azure, etc.)
+    @Volatile
     private var sttService: SttService? = null
     
     // TTS service
@@ -76,6 +92,10 @@ class PhoneAIService : Service() {
     // Gemini Live session (real-time bidirectional voice)
     private var liveSession: GeminiLiveSession? = null
     
+    // Collector jobs for the current Live session; cancelled before a new
+    // session starts so events are never forwarded multiple times.
+    private val liveSessionJobs = mutableListOf<Job>()
+    
     // Photo repository for managing received photos
     private var photoRepository: PhotoRepository? = null
     
@@ -84,15 +104,15 @@ class PhoneAIService : Service() {
     
     // Recording repository for saving glasses recordings
     private var recordingRepository: RecordingRepository? = null
+    // ID of the in-flight glasses recording, so the saved row correlates with the ID
+    // handed to the caller when recording started.
+    private var pendingGlassesRecordingId: String? = null
     
     // Current voice conversation ID (for grouping voice interactions)
     private var currentVoiceConversationId: String? = null
     
     // Track recording IDs currently being processed to prevent duplicate transcription
     private val processingRecordingIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    
-    private val _messageFlow = MutableSharedFlow<Message>()
-    val messageFlow = _messageFlow.asSharedFlow()
     
     override fun onCreate() {
         super.onCreate()
@@ -114,6 +134,9 @@ class PhoneAIService : Service() {
         
         // Notify UI service has stopped (immediate state update)
         ServiceBridge.updateServiceState(false)
+        // Clear process-wide bridge state so a stale "connected" status does
+        // not survive the service restart
+        ServiceBridge.reset()
         
         serviceScope.cancel()
         liveSession?.release()
@@ -162,9 +185,16 @@ class PhoneAIService : Service() {
                 settingsRepository.settingsFlow.collect { newSettings ->
                     Log.d(TAG, "Settings changed, updating services...")
                     val validatedNewSettings = validateAndCorrectSettings(newSettings)
-                    aiService = createAiService(validatedNewSettings)
-                    speechService = createSpeechService(validatedNewSettings)
-                    sttService = createSttService(validatedNewSettings)
+                    // Build replacements first, then swap and release the old STT
+                    // client so its sockets/threads are not leaked on every change
+                    val newAiService = createAiService(validatedNewSettings)
+                    val newSpeechService = createSpeechService(validatedNewSettings)
+                    val newSttService = createSttService(validatedNewSettings)
+                    val oldSttService = sttService
+                    aiService = newAiService
+                    speechService = newSpeechService
+                    sttService = newSttService
+                    oldSttService?.release()
                     
                     // Handle Live mode transitions
                     handleLiveModeTransition(validatedNewSettings)
@@ -243,7 +273,7 @@ class PhoneAIService : Service() {
             photoRepository = PhotoRepository(this, serviceScope)
             
             // Initialize recording repository for saving glasses recordings
-            recordingRepository = RecordingRepository.getInstance(this, serviceScope)
+            recordingRepository = RecordingRepository.getInstance(this)
             
             // Listen for received photos from glasses
             serviceScope.launch {
@@ -326,6 +356,7 @@ class PhoneAIService : Service() {
             try {
                 ServiceBridge.startGlassesRecordingFlow.collect { recordingId ->
                     Log.d(TAG, "Glasses recording start command: $recordingId")
+                    pendingGlassesRecordingId = recordingId
                     bluetoothManager?.sendMessage(
                         Message(type = MessageType.REMOTE_RECORD_START, payload = recordingId)
                     )
@@ -362,15 +393,15 @@ class PhoneAIService : Service() {
             return
         }
         
-        // Check API key before sending capture command
+        // Check API key before sending capture command (provider-agnostic)
         val settingsRepository = SettingsRepository.getInstance(this)
-        val apiKey = settingsRepository.getSettings().geminiApiKey
+        val apiKey = settingsRepository.getSettings().getCurrentApiKey()
         if (apiKey.isBlank()) {
             Log.e(TAG, "API key is not configured, aborting photo capture")
             // Notify UI to show API key warning dialog
             notifyApiKeyMissing()
             // Also send error message to glasses
-            bluetoothManager?.sendMessage(Message.aiError("API key not configured. Please set up an API key in Settings."))
+            bluetoothManager?.sendMessage(Message.aiError(getString(R.string.api_key_not_configured)))
             return
         }
         
@@ -450,12 +481,12 @@ class PhoneAIService : Service() {
             return
         }
         
-        // Check API key before triggering photo capture
+        // Check API key before triggering photo capture (provider-agnostic)
         val settingsRepository = SettingsRepository.getInstance(this)
-        val apiKey = settingsRepository.getSettings().geminiApiKey
+        val apiKey = settingsRepository.getSettings().getCurrentApiKey()
         if (apiKey.isBlank()) {
             Log.e(TAG, "API key is not configured, aborting photo capture")
-            bluetoothManager?.sendMessage(Message.aiError("API key not configured. Please set up an API key in Settings."))
+            bluetoothManager?.sendMessage(Message.aiError(getString(R.string.api_key_not_configured)))
             return
         }
         
@@ -534,7 +565,9 @@ class PhoneAIService : Service() {
                         Log.d(TAG, "Live mode active, signaling end of turn")
                         liveSession?.endOfTurn()
                     } else {
-                        processVoiceData(audioData)
+                        // Dispatch to a separate coroutine so the Bluetooth message
+                        // collector is not blocked for the duration of STT + chat + TTS
+                        serviceScope.launch { processVoiceData(audioData) }
                     }
                 }
             }
@@ -808,8 +841,10 @@ class PhoneAIService : Service() {
                     transcript = transcript,
                     aiResponse = aiResponse,
                     providerId = settings.aiProvider.name,
-                    modelId = settings.aiModelId
+                    modelId = settings.aiModelId,
+                    recordingId = pendingGlassesRecordingId
                 )
+                pendingGlassesRecordingId = null
                 Log.d(TAG, "Glasses recording saved to database")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save glasses recording", e)
@@ -845,6 +880,8 @@ class PhoneAIService : Service() {
             // Stop Live session if switching away from Live mode
             if (liveSession != null) {
                 Log.d(TAG, "Switching away from Live mode, stopping session")
+                liveSessionJobs.forEach { it.cancel() }
+                liveSessionJobs.clear()
                 liveSession?.release()
                 liveSession = null
                 
@@ -869,6 +906,9 @@ class PhoneAIService : Service() {
         
         Log.d(TAG, "Starting Gemini Live session")
         
+        // Release any previous session before replacing it (leaks the old
+        // WebSocket otherwise)
+        liveSession?.release()
         liveSession = GeminiLiveSession(
             context = this,
             apiKey = apiKey,
@@ -876,7 +916,9 @@ class PhoneAIService : Service() {
             systemPrompt = buildSystemPromptWithLanguage(settings.systemPrompt, settings.responseLanguage)
         )
         
-        // Collect Live session events
+        // Collect Live session events (cancel previous collectors first)
+        liveSessionJobs.forEach { it.cancel() }
+        liveSessionJobs.clear()
         collectLiveSessionEvents()
         
         // Start the session
@@ -911,7 +953,7 @@ class PhoneAIService : Service() {
                 ))
                 saveUserMessage(text)
             }
-        }
+        }.also { liveSessionJobs.add(it) }
         
         // AI response transcription
         serviceScope.launch {
@@ -928,21 +970,21 @@ class PhoneAIService : Service() {
                 val settings = SettingsRepository.getInstance(this@PhoneAIService).getSettings()
                 saveAssistantMessage(text, settings.aiModelId)
             }
-        }
+        }.also { liveSessionJobs.add(it) }
         
         // Turn complete
         serviceScope.launch {
             session.turnComplete.collect {
                 Log.d(TAG, "Live turn complete")
             }
-        }
+        }.also { liveSessionJobs.add(it) }
         
         // Interrupted
         serviceScope.launch {
             session.interrupted.collect {
                 Log.d(TAG, "Live session interrupted by user")
             }
-        }
+        }.also { liveSessionJobs.add(it) }
         
         // Session state changes
         serviceScope.launch {
@@ -963,7 +1005,7 @@ class PhoneAIService : Service() {
                     else -> { /* CONNECTING, ACTIVE, PAUSED, DISCONNECTING */ }
                 }
             }
-        }
+        }.also { liveSessionJobs.add(it) }
     }
     
     /**
@@ -1195,28 +1237,31 @@ class PhoneAIService : Service() {
     }
     
     /**
-     * Clean markdown formatting from AI response for better display
+     * Clean markdown formatting from AI response for better display.
+     * Patterns are pre-compiled in the companion object; single-asterisk and
+     * single-underscore rules require word boundaries so legitimate text such
+     * as snake_case_names or a*b*c is not corrupted.
      */
     private fun cleanMarkdown(text: String): String {
         return text
             // Remove bold/italic markers
-            .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")  // **bold**
-            .replace(Regex("\\*(.+?)\\*"), "$1")        // *italic*
-            .replace(Regex("__(.+?)__"), "$1")          // __bold__
-            .replace(Regex("_(.+?)_"), "$1")            // _italic_
+            .replace(boldAsteriskRegex, "$1")      // **bold**
+            .replace(italicAsteriskRegex, "$1")    // *italic*
+            .replace(boldUnderscoreRegex, "$1")    // __bold__
+            .replace(italicUnderscoreRegex, "$1")  // _italic_
             // Remove headers
-            .replace(Regex("^#{1,6}\\s*", RegexOption.MULTILINE), "")
+            .replace(headerRegex, "")
             // Remove code blocks
-            .replace(Regex("```[\\s\\S]*?```"), "")
-            .replace(Regex("`(.+?)`"), "$1")
+            .replace(codeBlockRegex, "")
+            .replace(inlineCodeRegex, "$1")
             // Remove links but keep text
-            .replace(Regex("\\[(.+?)]\\(.+?\\)"), "$1")
+            .replace(linkRegex, "$1")
             // Remove bullet points
-            .replace(Regex("^[\\-*+]\\s+", RegexOption.MULTILINE), "• ")
+            .replace(bulletRegex, "• ")
             // Remove numbered lists formatting
-            .replace(Regex("^\\d+\\.\\s+", RegexOption.MULTILINE), "")
+            .replace(numberedListRegex, "")
             // Clean up extra whitespace
-            .replace(Regex("\\n{3,}"), "\n\n")
+            .replace(extraNewlinesRegex, "\n\n")
             .trim()
     }
     
@@ -1543,24 +1588,6 @@ class PhoneAIService : Service() {
 }
 
 /**
- * STT Service (Simplified version)
- */
-class SpeechToTextService(private val apiKey: String) {
-    
-    suspend fun transcribe(audioData: ByteArray): String? {
-        return withContext(Dispatchers.IO) {
-            try {
-                // TODO: Implement OpenAI Whisper API call
-                // Returning mock result here
-                "This is a test voice input"
-            } catch (e: Exception) {
-                null
-            }
-        }
-    }
-}
-
-/**
  * TTS Service
  * Routes through EdgeTtsClient (high-quality neural voices) or System TTS
  * based on user preference in ApiSettings.ttsProvider.
@@ -1640,9 +1667,8 @@ class TextToSpeechService(private val context: android.content.Context) {
                 result.onSuccess { audioData ->
                     if (audioData.isNotEmpty()) {
                         onAudioChunk(audioData)
-                        withContext(mainDispatcher) {
-                            playAudioData(audioData)
-                        }
+                        // playAudioData self-dispatches: file I/O on IO, playback on Main
+                        playAudioData(audioData)
                     } else {
                         android.util.Log.w(TAG, "Edge TTS returned empty data, falling back to system TTS")
                         withContext(mainDispatcher) { speakWithSystemTts(text, settings) }
@@ -1655,7 +1681,7 @@ class TextToSpeechService(private val context: android.content.Context) {
                 }
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "Edge TTS error", e)
-                withContext(mainDispatcher) { speakWithSystemTts(text, null) }
+                withContext(mainDispatcher) { speakWithSystemTts(text, settings) }
             }
         }
     }
@@ -1701,22 +1727,28 @@ class TextToSpeechService(private val context: android.content.Context) {
 
     // ── Audio playback ───────────────────────────────────
 
-    private fun playAudioData(audioData: ByteArray) {
+    private suspend fun playAudioData(audioData: ByteArray) {
         try {
-            val tempFile = java.io.File.createTempFile("tts_", ".mp3", context.cacheDir)
-            java.io.FileOutputStream(tempFile).use { it.write(audioData) }
-            android.media.MediaPlayer().apply {
-                setDataSource(tempFile.absolutePath)
-                setAudioAttributes(
-                    android.media.AudioAttributes.Builder()
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
-                        .build()
-                )
-                setOnCompletionListener { mp -> mp.release(); tempFile.delete() }
-                setOnErrorListener { mp, _, _ -> mp.release(); tempFile.delete(); true }
-                prepare()
-                start()
+            // Blocking disk I/O must not run on the main thread
+            val tempFile = withContext(Dispatchers.IO) {
+                val file = java.io.File.createTempFile("tts_", ".mp3", context.cacheDir)
+                java.io.FileOutputStream(file).use { it.write(audioData) }
+                file
+            }
+            withContext(mainDispatcher) {
+                android.media.MediaPlayer().apply {
+                    setDataSource(tempFile.absolutePath)
+                    setAudioAttributes(
+                        android.media.AudioAttributes.Builder()
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
+                            .build()
+                    )
+                    setOnCompletionListener { mp -> mp.release(); tempFile.delete() }
+                    setOnErrorListener { mp, _, _ -> mp.release(); tempFile.delete(); true }
+                    prepare()
+                    start()
+                }
             }
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Failed to play audio", e)
@@ -1755,21 +1787,4 @@ class TextToSpeechService(private val context: android.content.Context) {
                         .replace(Regex("\\s{2,}"), " ").trim()
             else -> text
         }
-}
-
-/**
- * Bluetooth Manager (Simplified version)
- */
-class BluetoothManager(private val context: android.content.Context) {
-    
-    private val _messageFlow = MutableSharedFlow<Message>()
-    val messageFlow = _messageFlow.asSharedFlow()
-    
-    suspend fun sendMessage(message: Message) {
-        // TODO: Implement Bluetooth send
-    }
-    
-    fun disconnect() {
-        // TODO: Implement Bluetooth disconnect
-    }
 }

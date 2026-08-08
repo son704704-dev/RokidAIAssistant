@@ -1,6 +1,7 @@
 package com.example.rokidphone.data.db
 
 import androidx.room.*
+import com.example.rokidphone.BuildConfig
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -14,7 +15,7 @@ import kotlinx.coroutines.flow.Flow
         RecordingEntity::class
     ],
     version = 2,
-    exportSchema = false
+    exportSchema = true
 )
 @TypeConverters(Converters::class, RecordingConverters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -31,14 +32,19 @@ abstract class AppDatabase : RoomDatabase() {
         
         fun getInstance(context: android.content.Context): AppDatabase {
             return instance ?: synchronized(this) {
-                instance ?: androidx.room.Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    DATABASE_NAME
-                )
-                    .fallbackToDestructiveMigration(dropAllTables = true)
-                    .build()
-                    .also { instance = it }
+                instance ?: run {
+                    val builder = androidx.room.Room.databaseBuilder(
+                        context.applicationContext,
+                        AppDatabase::class.java,
+                        DATABASE_NAME
+                    )
+                    if (BuildConfig.DEBUG) {
+                        // Debug-only safety net. Release builds MUST ship explicit
+                        // migrations; destructive fallback silently wipes all user data.
+                        builder.fallbackToDestructiveMigration(dropAllTables = true)
+                    }
+                    builder.build().also { instance = it }
+                }
             }
         }
     }
@@ -49,23 +55,27 @@ abstract class AppDatabase : RoomDatabase() {
  */
 class Converters {
     @TypeConverter
-    fun fromTimestamp(value: Long?): java.util.Date? {
-        return value?.let { java.util.Date(it) }
-    }
-    
+    fun fromTimestamp(value: Long?): java.util.Date? = value?.let { java.util.Date(it) }
+
     @TypeConverter
-    fun dateToTimestamp(date: java.util.Date?): Long? {
-        return date?.time
-    }
-    
+    fun dateToTimestamp(date: java.util.Date?): Long? = date?.time
+
+    // JSON serialization: a comma join is lossy for elements containing ',' or blanks.
     @TypeConverter
     fun fromStringList(value: String?): List<String>? {
-        return value?.split(",")?.filter { it.isNotBlank() }
+        if (value == null) return null
+        return try {
+            val array = org.json.JSONArray(value)
+            List(array.length()) { i -> array.getString(i) }
+        } catch (e: org.json.JSONException) {
+            android.util.Log.w("Converters", "Failed to parse string list, falling back to legacy comma split", e)
+            value.split(",").filter { it.isNotBlank() }
+        }
     }
-    
+
     @TypeConverter
     fun toStringList(list: List<String>?): String? {
-        return list?.joinToString(",")
+        return list?.let { org.json.JSONArray(it).toString() }
     }
 }
 
@@ -182,7 +192,8 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations WHERE id = :id")
     fun getConversationByIdFlow(id: String): Flow<ConversationEntity?>
     
-    @Query("SELECT * FROM conversations WHERE title LIKE '%' || :query || '%' ORDER BY updated_at DESC")
+    // Caller must escape '%', '_' and '\' in `query` before calling.
+    @Query("SELECT * FROM conversations WHERE title LIKE '%' || :query || '%' ESCAPE '\' ORDER BY updated_at DESC")
     fun searchConversations(query: String): Flow<List<ConversationEntity>>
     
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -208,7 +219,13 @@ interface ConversationDao {
     
     @Query("UPDATE conversations SET message_count = message_count + 1, updated_at = :updatedAt WHERE id = :id")
     suspend fun incrementMessageCount(id: String, updatedAt: Long = System.currentTimeMillis())
-    
+
+    @Query("UPDATE conversations SET message_count = MAX(message_count - 1, 0), updated_at = :updatedAt WHERE id = :id")
+    suspend fun decrementMessageCount(id: String, updatedAt: Long = System.currentTimeMillis())
+
+    @Query("UPDATE conversations SET message_count = 0, updated_at = :updatedAt WHERE id = :id")
+    suspend fun resetMessageCount(id: String, updatedAt: Long = System.currentTimeMillis())
+
     @Query("SELECT COUNT(*) FROM conversations WHERE is_archived = 0")
     suspend fun getActiveConversationCount(): Int
     
@@ -222,13 +239,14 @@ interface ConversationDao {
 @Dao
 interface MessageDao {
     
-    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY created_at ASC")
+    // Tiebreaker on id: same-millisecond inserts (prompt + placeholder) must order deterministically.
+    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY created_at ASC, id ASC")
     fun getMessagesForConversation(conversationId: String): Flow<List<MessageEntity>>
-    
-    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY created_at ASC")
+
+    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY created_at ASC, id ASC")
     suspend fun getMessagesForConversationSync(conversationId: String): List<MessageEntity>
-    
-    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY created_at ASC LIMIT :limit OFFSET :offset")
+
+    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY created_at ASC, id ASC LIMIT :limit OFFSET :offset")
     suspend fun getMessagesPaged(conversationId: String, limit: Int, offset: Int): List<MessageEntity>
     
     @Query("SELECT * FROM messages WHERE id = :id")
@@ -245,6 +263,12 @@ interface MessageDao {
     
     @Update
     suspend fun updateMessage(message: MessageEntity)
+
+    /**
+     * Atomic content update for streaming; returns the number of rows updated (0 = no such message).
+     */
+    @Query("UPDATE messages SET content = :content, token_count = COALESCE(:tokenCount, token_count), finish_reason = COALESCE(:finishReason, finish_reason) WHERE id = :id")
+    suspend fun updateContent(id: String, content: String, tokenCount: Int?, finishReason: String?): Int
     
     @Delete
     suspend fun deleteMessage(message: MessageEntity)

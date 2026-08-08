@@ -1,6 +1,9 @@
 package com.example.rokidphone.ai.catalog
 
 import com.example.rokidphone.data.AiProvider
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Result of resolving a provider's model catalog. */
 data class ModelCatalogSnapshot(
@@ -31,6 +34,7 @@ class ModelCatalogRepository(
         const val DEFAULT_TTL_MS = 24L * 60 * 60 * 1000
     }
 
+    @Volatile
     var ttlMs: Long = DEFAULT_TTL_MS
 
     /**
@@ -47,35 +51,50 @@ class ModelCatalogRepository(
         forceRefresh: Boolean = false
     ): ModelCatalogSnapshot {
         val descriptor = ProviderRegistry.descriptorFor(provider)
-        val cached = cache.read(provider)
-        val cacheFresh = cached != null && (clock() - cached.fetchedAtEpochMs) < ttlMs
+        // Capture the clock once per call so the freshness check, the persisted
+        // timestamp and the returned snapshot cannot disagree.
+        val now = clock()
+        val cached = withContext(Dispatchers.IO) { cache.read(provider) }
+        val cacheAge = cached?.let { now - it.fetchedAtEpochMs }
+        // A negative age means the device clock moved backwards; treat the
+        // entry as stale rather than fresh forever.
+        val cacheFresh = cacheAge != null && cacheAge >= 0 && cacheAge < ttlMs
 
         if (descriptor.hasRemoteCatalog && apiKey.isNotBlank() && (forceRefresh || !cacheFresh)) {
             try {
                 val live = remote.fetchModels(provider, apiKey, baseUrl)
+                    .map { it.withSource(CatalogSource.LIVE) }
                 if (live.isNotEmpty()) {
-                    cache.write(provider, CachedCatalog(live, clock()))
-                    return ModelCatalogSnapshot(provider, live, CatalogSource.LIVE, clock())
+                    withContext(Dispatchers.IO) { cache.write(provider, CachedCatalog(live, now)) }
+                    return ModelCatalogSnapshot(provider, live, CatalogSource.LIVE, now)
                 }
-            } catch (e: ProviderApiException) {
+                // Successful but empty response: surface it explicitly so
+                // callers can distinguish "provider reported no models" from
+                // "never fetched".
+                return serveStaleOrFallback(provider, cached, "Provider returned an empty model list")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
                 return serveStaleOrFallback(provider, cached, e.message)
             }
         }
 
         if (cached != null) {
-            val models = cached.models.map { it.withSource(CatalogSource.CACHED) }
-            return ModelCatalogSnapshot(provider, models, CatalogSource.CACHED, cached.fetchedAtEpochMs)
+            return cachedSnapshot(provider, cached)
         }
 
         return fallbackSnapshot(provider)
     }
 
-    /** Synchronous catalog access for UI first-paint (cache/fallback only, no network). */
+    /**
+     * Synchronous catalog access for UI first-paint (cache/fallback only, no
+     * network). Performs blocking cache I/O — call off the main thread or
+     * pre-warm the cache.
+     */
     fun getCachedOrFallback(provider: AiProvider): ModelCatalogSnapshot {
         val cached = cache.read(provider)
         if (cached != null) {
-            val models = cached.models.map { it.withSource(CatalogSource.CACHED) }
-            return ModelCatalogSnapshot(provider, models, CatalogSource.CACHED, cached.fetchedAtEpochMs)
+            return cachedSnapshot(provider, cached)
         }
         return fallbackSnapshot(provider)
     }
@@ -126,13 +145,21 @@ class ModelCatalogRepository(
         error: String?
     ): ModelCatalogSnapshot {
         if (cached != null) {
-            val models = cached.models.map { it.withSource(CatalogSource.CACHED) }
-            return ModelCatalogSnapshot(
-                provider, models, CatalogSource.CACHED, cached.fetchedAtEpochMs,
-                remoteError = error
-            )
+            return cachedSnapshot(provider, cached, error)
         }
         return fallbackSnapshot(provider).copy(remoteError = error)
+    }
+
+    private fun cachedSnapshot(
+        provider: AiProvider,
+        cached: CachedCatalog,
+        error: String? = null
+    ): ModelCatalogSnapshot {
+        val models = cached.models.map { it.withSource(CatalogSource.CACHED) }
+        return ModelCatalogSnapshot(
+            provider, models, CatalogSource.CACHED, cached.fetchedAtEpochMs,
+            remoteError = error
+        )
     }
 
     private fun fallbackSnapshot(provider: AiProvider) = ModelCatalogSnapshot(

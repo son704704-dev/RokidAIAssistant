@@ -5,10 +5,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -34,7 +35,8 @@ class AppDatabaseInstrumentedTest {
 
     @After
     fun tearDown() {
-        db.close()
+        // Guard: if setup() threw before assigning db, an unguarded close would mask the real cause.
+        if (::db.isInitialized) db.close()
     }
 
     @Test
@@ -68,7 +70,10 @@ class AppDatabaseInstrumentedTest {
         assertEquals(1, allConversations.size)
         assertEquals("Test Conversation", allConversations.first().title)
 
-        val messagesFlow = messageDao.getMessagesForConversation(conversation.id).first()
+        // Fail fast with a clear message if the Room flow never emits.
+        val messagesFlow = withTimeout(5_000) {
+            messageDao.getMessagesForConversation(conversation.id).first()
+        }
         val messagesSync = messageDao.getMessagesForConversationSync(conversation.id)
         assertEquals(2, messagesFlow.size)
         assertEquals(2, messagesSync.size)
@@ -95,8 +100,11 @@ class AppDatabaseInstrumentedTest {
 
         assertEquals(0, active.size)
         assertEquals(1, archived.size)
-        assertEquals(true, archived.first().isPinned)
-        assertEquals(true, archived.first().isArchived)
+        val archivedConversation = archived.first()
+        assertTrue(archivedConversation.isPinned)
+        assertTrue(archivedConversation.isArchived)
+        // Verify the timestamp parameter is actually bound (last write wins: 20L).
+        assertEquals(20L, archivedConversation.updatedAt)
     }
 
     @Test
@@ -122,6 +130,8 @@ class AppDatabaseInstrumentedTest {
         conversationDao.deleteConversationById(conversation.id)
 
         assertEquals(0, messageDao.getMessageCount(conversation.id))
+        // Conversation-independent lookup proves the FK cascade really deleted the row.
+        assertNull(messageDao.getMessageById("msg-cascade"))
     }
 
     @Test
@@ -137,10 +147,9 @@ class AppDatabaseInstrumentedTest {
         recordingDao.insert(recording)
 
         recordingDao.updateTranscript(id = recording.id, transcript = "hello world")
-        var updated = recordingDao.getRecordingById(recording.id)
-        assertNotNull(updated)
-        assertEquals("hello world", updated!!.transcript)
-        assertEquals(RecordingStatus.TRANSCRIBED, updated.status)
+        val afterTranscript = requireNotNull(recordingDao.getRecordingById(recording.id))
+        assertEquals("hello world", afterTranscript.transcript)
+        assertEquals(RecordingStatus.TRANSCRIBED, afterTranscript.status)
 
         recordingDao.updateAiResponse(
             id = recording.id,
@@ -148,16 +157,16 @@ class AppDatabaseInstrumentedTest {
             providerId = "OPENAI",
             modelId = "gpt-5"
         )
-        updated = recordingDao.getRecordingById(recording.id)
-        assertEquals("analysis", updated!!.aiResponse)
-        assertEquals("OPENAI", updated.providerId)
-        assertEquals("gpt-5", updated.modelId)
-        assertEquals(RecordingStatus.ANALYZED, updated.status)
+        val afterAi = requireNotNull(recordingDao.getRecordingById(recording.id))
+        assertEquals("analysis", afterAi.aiResponse)
+        assertEquals("OPENAI", afterAi.providerId)
+        assertEquals("gpt-5", afterAi.modelId)
+        assertEquals(RecordingStatus.ANALYZED, afterAi.status)
 
         recordingDao.updateError(id = recording.id, errorMessage = "failed")
-        updated = recordingDao.getRecordingById(recording.id)
-        assertEquals(RecordingStatus.ERROR, updated!!.status)
-        assertEquals("failed", updated.errorMessage)
+        val afterError = requireNotNull(recordingDao.getRecordingById(recording.id))
+        assertEquals(RecordingStatus.ERROR, afterError.status)
+        assertEquals("failed", afterError.errorMessage)
     }
 
     @Test
@@ -183,6 +192,8 @@ class AppDatabaseInstrumentedTest {
         val favorites = recordingDao.getFavoriteRecordings().first()
         assertEquals(1, favorites.size)
         assertEquals("rec-a", favorites.first().id)
+        // Verify the timestamp parameter is actually bound.
+        assertEquals(100L, favorites.first().updatedAt)
 
         val search = recordingDao.searchRecordings("hello").first()
         assertEquals(1, search.size)

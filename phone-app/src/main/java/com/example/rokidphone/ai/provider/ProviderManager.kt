@@ -7,7 +7,6 @@ import com.example.rokidphone.data.ApiSettings
 import com.example.rokidphone.data.SettingsRepository
 import com.example.rokidphone.service.ai.AiServiceFactory
 import com.example.rokidphone.service.ai.AiServiceProvider
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,7 +38,9 @@ class ProviderManager private constructor(
     private val mutex = Mutex()
     
     // Cached AI service instance
+    @Volatile
     private var cachedService: AiServiceProvider? = null
+    @Volatile
     private var cachedSettings: ApiSettings? = null
     
     // Currently active provider setting
@@ -93,7 +94,12 @@ class ProviderManager private constructor(
      */
     suspend fun getServiceForProvider(providerId: String): AiServiceProvider? = mutex.withLock {
         val settings = settingsRepository.getSettings()
-        val provider = AiProvider.fromName(providerId.uppercase())
+        val provider = AiProvider.entries.find {
+            it.name.equals(providerId.replace('-', '_'), ignoreCase = true)
+        } ?: run {
+            Log.e(TAG, "Unknown provider id: $providerId")
+            return null
+        }
         
         // Create temporary settings
         val tempSettings = settings.copy(aiProvider = provider)
@@ -163,16 +169,12 @@ class ProviderManager private constructor(
     /**
      * List providers that support speech recognition
      */
-    fun getSpeechProviders(): List<AiProvider> {
-        return AiProvider.entries.filter { it.supportsSpeech }
-    }
+    fun getSpeechProviders(): List<AiProvider> = AiProvider.entries.filter { it.supportsSpeech }
     
     /**
      * List providers that support vision
      */
-    fun getVisionProviders(): List<AiProvider> {
-        return AiProvider.entries.filter { it.supportsVision }
-    }
+    fun getVisionProviders(): List<AiProvider> = AiProvider.entries.filter { it.supportsVision }
     
     /**
      * Convert ApiSettings to ProviderSetting
@@ -294,6 +296,15 @@ class ProviderManager private constructor(
                     apiKey = settings.customApiKey,
                     baseUrl = settings.customBaseUrl,
                     modelId = settings.customModelName
+                ))
+            }
+            if (settings.anythingllmServerUrl.isNotBlank() &&
+                settings.anythingllmWorkspaceSlug.isNotBlank()
+            ) {
+                add(ProviderSetting.AnythingLLM(
+                    serverUrl = settings.anythingllmServerUrl,
+                    apiKey = settings.anythingllmApiKey,
+                    workspaceSlug = settings.anythingllmWorkspaceSlug
                 ))
             }
         }

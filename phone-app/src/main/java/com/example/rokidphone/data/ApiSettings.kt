@@ -1,5 +1,6 @@
 package com.example.rokidphone.data
 
+import android.util.Log
 import androidx.annotation.StringRes
 import com.example.rokidphone.R
 import com.example.rokidphone.service.stt.SttProvider
@@ -153,8 +154,18 @@ enum class AiProvider(
     );
     
     companion object {
+        /** Parse a provider by exact enum [name]; null when unrecognised. */
+        fun fromNameOrNull(name: String): AiProvider? = entries.find { it.name == name }
+
+        /**
+         * Parse a provider by enum [name]. Unrecognised names log a warning and
+         * fall back to [GEMINI]; prefer [fromNameOrNull] when the caller can
+         * handle unknown persisted values itself.
+         */
         fun fromName(name: String): AiProvider {
-            return entries.find { it.name == name } ?: GEMINI
+            return fromNameOrNull(name) ?: GEMINI.also {
+                Log.w("AiProvider", "Unknown provider name '$name', falling back to GEMINI")
+            }
         }
     }
     
@@ -173,6 +184,14 @@ enum class AiProvider(
      */
     fun requiresSecretKey(): Boolean = this == BAIDU
 }
+
+/**
+ * Providers usable for speech-to-text. Deliberately a curated list rather than
+ * `AiProvider.entries.filter { it.supportsSpeech }`: GEMINI_LIVE also sets
+ * supportsSpeech but shares the Gemini key and must not appear as a standalone
+ * STT option.
+ */
+private val SPEECH_CAPABLE_STT_PROVIDERS = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ)
 
 /**
  * Model Options
@@ -209,29 +228,33 @@ object AvailableModels {
 
     private val catalog get() = com.example.rokidphone.ai.catalog.FallbackModelCatalog
 
-    val geminiModels get() = catalog.geminiModels.map(::toOption)
-    val openaiModels get() = catalog.openaiModels.map(::toOption)
-    val anthropicModels get() = catalog.anthropicModels.map(::toOption)
-    val deepseekModels get() = catalog.deepseekModels.map(::toOption)
-    val groqModels get() = catalog.groqModels.map(::toOption)
-    val anythingllmModels get() = catalog.anythingllmModels.map(::toOption)
-    val customModels get() = catalog.customModels.map(::toOption)
-    val xaiModels get() = catalog.xaiModels.map(::toOption)
-    val alibabaModels get() = catalog.alibabaModels.map(::toOption)
-    val zhipuModels get() = catalog.zhipuModels.map(::toOption)
-    val baiduModels get() = catalog.baiduModels.map(::toOption)
-    val perplexityModels get() = catalog.perplexityModels.map(::toOption)
-    val moonshotModels get() = catalog.moonshotModels.map(::toOption)
-    val geminiLiveModels get() = catalog.geminiLiveModels.map(::toOption)
-    val mistralModels get() = catalog.mistralModels.map(::toOption)
+    // The fallback catalog is static; map it to ModelOption once instead of per access.
+    val geminiModels by lazy { catalog.geminiModels.map(::toOption) }
+    val openaiModels by lazy { catalog.openaiModels.map(::toOption) }
+    val anthropicModels by lazy { catalog.anthropicModels.map(::toOption) }
+    val deepseekModels by lazy { catalog.deepseekModels.map(::toOption) }
+    val groqModels by lazy { catalog.groqModels.map(::toOption) }
+    val anythingllmModels by lazy { catalog.anythingllmModels.map(::toOption) }
+    val customModels by lazy { catalog.customModels.map(::toOption) }
+    val xaiModels by lazy { catalog.xaiModels.map(::toOption) }
+    val alibabaModels by lazy { catalog.alibabaModels.map(::toOption) }
+    val zhipuModels by lazy { catalog.zhipuModels.map(::toOption) }
+    val baiduModels by lazy { catalog.baiduModels.map(::toOption) }
+    val perplexityModels by lazy { catalog.perplexityModels.map(::toOption) }
+    val moonshotModels by lazy { catalog.moonshotModels.map(::toOption) }
+    val geminiLiveModels by lazy { catalog.geminiLiveModels.map(::toOption) }
+    val mistralModels by lazy { catalog.mistralModels.map(::toOption) }
 
     fun getModelsForProvider(provider: AiProvider): List<ModelOption> =
         catalog.modelsFor(provider).map(::toOption)
 
-    fun findModel(modelId: String): ModelOption? = allModels.find { it.id == modelId }
+    private val byId: Map<String, ModelOption> by lazy { allModels.associateBy { it.id } }
 
-    val allModels: List<ModelOption>
-        get() = AiProvider.entries.flatMap { getModelsForProvider(it) }
+    fun findModel(modelId: String): ModelOption? = byId[modelId]
+
+    val allModels: List<ModelOption> by lazy {
+        AiProvider.entries.flatMap { getModelsForProvider(it) }
+    }
 }
 
 /**
@@ -440,25 +463,7 @@ data class ApiSettings(
     /**
      * Get current AI provider's API Key
      */
-    fun getCurrentApiKey(): String {
-        return when (aiProvider) {
-            AiProvider.GEMINI -> geminiApiKey
-            AiProvider.OPENAI -> openaiApiKey
-            AiProvider.ANTHROPIC -> anthropicApiKey
-            AiProvider.DEEPSEEK -> deepseekApiKey
-            AiProvider.GROQ -> groqApiKey
-            AiProvider.XAI -> xaiApiKey
-            AiProvider.ALIBABA -> alibabaApiKey
-            AiProvider.ZHIPU -> zhipuApiKey
-            AiProvider.BAIDU -> getBaiduEffectiveApiKey()
-            AiProvider.PERPLEXITY -> perplexityApiKey
-            AiProvider.MOONSHOT -> moonshotApiKey
-            AiProvider.MISTRAL -> mistralApiKey
-            AiProvider.GEMINI_LIVE -> geminiApiKey  // Shares Gemini API key
-            AiProvider.ANYTHINGLLM -> anythingllmApiKey
-            AiProvider.CUSTOM -> customApiKey
-        }
-    }
+    fun getCurrentApiKey(): String = getApiKeyForProvider(aiProvider)
 
     /**
      * Get API Key for specified provider
@@ -506,7 +511,15 @@ data class ApiSettings(
      * fallback default.
      */
     fun getModelIdForProvider(provider: AiProvider): String {
-        if (provider == AiProvider.CUSTOM) return customModelName.ifBlank { aiModelId }
+        // CUSTOM: honour the per-provider selection written by withModelForProvider()
+        // first, then the explicit custom model name; never leak another
+        // provider's aiModelId into a Custom endpoint request.
+        if (provider == AiProvider.CUSTOM) {
+            providerModelIds[AiProvider.CUSTOM.name]?.takeIf { it.isNotBlank() }?.let { return it }
+            return customModelName.ifBlank {
+                com.example.rokidphone.ai.catalog.FallbackModelCatalog.defaultModelFor(provider)
+            }
+        }
         providerModelIds[provider.name]?.takeIf { it.isNotBlank() }?.let { return it }
         if (provider == aiProvider && aiModelId.isNotBlank()) return aiModelId
         return com.example.rokidphone.ai.catalog.FallbackModelCatalog.defaultModelFor(provider)
@@ -523,11 +536,13 @@ data class ApiSettings(
 
     /** Apply legacy model-ID migrations (e.g. DeepSeek V3 aliases → V4). */
     fun migrateLegacyModelIds(): ApiSettings {
+        // The catalog keys migrations by provider; flatten to a single global
+        // id→id map and apply it to every provider's stored model id as well
+        // as the legacy active id.
         val migrations = com.example.rokidphone.ai.catalog.FallbackModelCatalog.legacyModelMigration
-        val newMap = providerModelIds.mapValues { (providerName, id) ->
-            if (providerName == AiProvider.DEEPSEEK.name) migrations[id] ?: id else id
-        }
-        val newActive = if (aiProvider == AiProvider.DEEPSEEK) migrations[aiModelId] ?: aiModelId else aiModelId
+            .values.flatMap { it.entries }.associate { it.toPair() }
+        val newMap = providerModelIds.mapValues { (_, id) -> migrations[id] ?: id }
+        val newActive = migrations[aiModelId] ?: aiModelId
         return if (newMap != providerModelIds || newActive != aiModelId) {
             copy(providerModelIds = newMap, aiModelId = newActive)
         } else this
@@ -553,7 +568,10 @@ data class ApiSettings(
      */
     fun isProviderConfigured(provider: AiProvider): Boolean {
         return when (provider) {
-            AiProvider.CUSTOM -> customBaseUrl.isNotBlank() && isValidUrl(customBaseUrl)
+            // customBaseUrl has a non-blank default, so require an explicit API key
+            // or a user-changed (non-default) URL before treating CUSTOM as configured
+            AiProvider.CUSTOM -> customApiKey.isNotBlank() ||
+                (customBaseUrl != AiProvider.CUSTOM.defaultBaseUrl && isValidUrl(customBaseUrl))
             AiProvider.BAIDU ->
                 baiduQianfanApiKey.isNotBlank() || (baiduApiKey.isNotBlank() && baiduSecretKey.isNotBlank())
             AiProvider.GEMINI_LIVE -> geminiApiKey.isNotBlank()  // Shares Gemini API key
@@ -567,16 +585,14 @@ data class ApiSettings(
      * Check if any speech recognition service is available
      */
     fun hasSpeechServiceConfigured(): Boolean {
-        val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ)
-        return sttProviders.any { isProviderConfigured(it) }
+        return SPEECH_CAPABLE_STT_PROVIDERS.any { isProviderConfigured(it) }
     }
 
     /**
      * Get list of configured STT providers
      */
     fun getConfiguredSttProviders(): List<AiProvider> {
-        val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ)
-        return sttProviders.filter { isProviderConfigured(it) }
+        return SPEECH_CAPABLE_STT_PROVIDERS.filter { isProviderConfigured(it) }
     }
     
     /**
@@ -603,12 +619,15 @@ data class ApiSettings(
                xaiApiKey.isNotBlank() ||
                alibabaApiKey.isNotBlank() ||
                zhipuApiKey.isNotBlank() ||
-               (baiduApiKey.isNotBlank() && baiduSecretKey.isNotBlank()) ||
+               (baiduQianfanApiKey.isNotBlank() || (baiduApiKey.isNotBlank() && baiduSecretKey.isNotBlank())) ||
                perplexityApiKey.isNotBlank() ||
                moonshotApiKey.isNotBlank() ||
                mistralApiKey.isNotBlank() ||
                (anythingllmApiKey.isNotBlank() && anythingllmServerUrl.isNotBlank()) ||
-               (customApiKey.isNotBlank() || customBaseUrl.isNotBlank())
+               // customBaseUrl is non-blank by default; only count CUSTOM when the
+               // user set an API key or changed the URL away from the default
+               (customApiKey.isNotBlank() ||
+                   (customBaseUrl.isNotBlank() && customBaseUrl != AiProvider.CUSTOM.defaultBaseUrl))
     }
     
     /**
@@ -621,14 +640,7 @@ data class ApiSettings(
     /**
      * Validate URL format
      */
-    private fun isValidUrl(url: String): Boolean {
-        return try {
-            val trimmed = url.trim()
-            trimmed.startsWith("http://") || trimmed.startsWith("https://")
-        } catch (e: Exception) {
-            false
-        }
-    }
+    private fun isValidUrl(url: String): Boolean = isValidHttpUrl(url)
 }
 
 /**
@@ -646,7 +658,7 @@ sealed class SettingsValidationResult {
  */
 fun ApiSettings.validateForChat(): SettingsValidationResult {
     return when {
-        aiProvider == AiProvider.CUSTOM && !isValidUrl(customBaseUrl) ->
+        aiProvider == AiProvider.CUSTOM && !isValidHttpUrl(customBaseUrl) ->
             SettingsValidationResult.InvalidConfiguration("Invalid custom provider URL")
         aiProvider == AiProvider.BAIDU && !isProviderConfigured(AiProvider.BAIDU) ->
             SettingsValidationResult.MissingApiKey(AiProvider.BAIDU)
@@ -664,11 +676,10 @@ fun ApiSettings.validateForChat(): SettingsValidationResult {
  * Validate settings for speech recognition
  */
 fun ApiSettings.validateForSpeech(): SettingsValidationResult {
-    val sttProviders = listOf(AiProvider.GEMINI, AiProvider.OPENAI, AiProvider.GROQ)
-    val configuredStt = sttProviders.filter { isProviderConfigured(it) }
-    
+    val configuredStt = SPEECH_CAPABLE_STT_PROVIDERS.filter { isProviderConfigured(it) }
+
     return if (configuredStt.isEmpty()) {
-        SettingsValidationResult.MissingSpeechService(sttProviders)
+        SettingsValidationResult.MissingSpeechService(SPEECH_CAPABLE_STT_PROVIDERS)
     } else {
         SettingsValidationResult.Valid
     }
@@ -719,13 +730,8 @@ fun ApiSettings.toSttCredentials(): com.example.rokidphone.service.stt.SttCreden
 }
 
 /**
- * Extension function to check if URL is valid
+ * Check whether [url] uses an http(s) scheme. Single implementation shared by
+ * the ApiSettings member and the file-level validation extensions.
  */
-private fun ApiSettings.isValidUrl(url: String): Boolean {
-    return try {
-        val trimmed = url.trim()
-        trimmed.startsWith("http://") || trimmed.startsWith("https://")
-    } catch (e: Exception) {
-        false
-    }
-}
+private fun isValidHttpUrl(url: String): Boolean =
+    url.trim().let { it.startsWith("http://") || it.startsWith("https://") }

@@ -1,6 +1,8 @@
 package com.example.rokidphone.service.ai
 
+import android.util.Log
 import com.example.rokidphone.ai.catalog.ApiProtocol
+import com.example.rokidphone.ai.catalog.ModelCapabilityResolver
 import com.example.rokidphone.ai.catalog.ProviderRegistry
 import com.example.rokidphone.ai.provider.AnythingLLMProvider
 import com.example.rokidphone.ai.provider.ChatMessage
@@ -10,6 +12,9 @@ import com.example.rokidphone.ai.provider.ProviderSetting
 import com.example.rokidphone.data.AiProvider
 import com.example.rokidphone.data.ApiSettings
 import com.example.rokidphone.service.SpeechResult
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * AI Service Factory.
@@ -21,6 +26,14 @@ import com.example.rokidphone.service.SpeechResult
  */
 object AiServiceFactory {
 
+    private const val TAG = "AiServiceFactory"
+
+    /** ApiSettings.customProtocol value that selects the OpenAI Responses API. */
+    private const val CUSTOM_PROTOCOL_RESPONSES = "responses"
+
+    /** Max AnythingLLM adapter history messages (user + assistant turns). */
+    private const val ANYTHINGLLM_MAX_HISTORY_MESSAGES = 20
+
     /**
      * Create AI service based on settings
      */
@@ -31,7 +44,11 @@ object AiServiceFactory {
         val descriptor = ProviderRegistry.descriptorFor(settings.aiProvider)
 
         return when (descriptor.protocol) {
-            ApiProtocol.GEMINI_GENERATE_CONTENT -> GeminiService(
+            // Gemini Live uses WebSocket streaming, not REST API.
+            // Return a standard GeminiService as fallback for non-live operations
+            // (e.g., analyzeImage). The actual live session is managed by
+            // GeminiLiveSession in PhoneAIService.
+            ApiProtocol.GEMINI_GENERATE_CONTENT, ApiProtocol.GEMINI_LIVE -> GeminiService(
                 apiKey = apiKey,
                 modelId = modelId,
                 systemPrompt = systemPrompt,
@@ -39,21 +56,6 @@ object AiServiceFactory {
                 maxTokens = settings.maxTokens,
                 topP = settings.topP
             )
-
-            ApiProtocol.GEMINI_LIVE -> {
-                // Gemini Live uses WebSocket streaming, not REST API.
-                // Return a standard GeminiService as fallback for non-live operations
-                // (e.g., analyzeImage). The actual live session is managed by
-                // GeminiLiveSession in PhoneAIService.
-                GeminiService(
-                    apiKey = apiKey,
-                    modelId = modelId,
-                    systemPrompt = systemPrompt,
-                    temperature = settings.temperature,
-                    maxTokens = settings.maxTokens,
-                    topP = settings.topP
-                )
-            }
 
             ApiProtocol.ANTHROPIC_MESSAGES -> AnthropicService(
                 apiKey = apiKey,
@@ -107,13 +109,11 @@ object AiServiceFactory {
             ApiProtocol.OPENAI_CHAT_COMPLETIONS, ApiProtocol.CUSTOM_OPENAI_COMPATIBLE ->
                 createChatCompletionsService(settings, modelId, apiKey, systemPrompt)
 
-            ApiProtocol.BAIDU_LEGACY_RPC -> BaiduService(
-                apiKey = settings.baiduApiKey,
-                secretKey = settings.baiduSecretKey,
-                modelId = modelId,
-                systemPrompt = systemPrompt,
-                temperature = settings.temperature,
-                topP = settings.topP
+            // BAIDU_LEGACY_RPC is unreachable: ProviderRegistry never maps a
+            // provider to it (Baidu uses BAIDU_QIANFAN_V2); legacy auth is
+            // handled by the isBaiduLegacyMode() check in that branch.
+            ApiProtocol.BAIDU_LEGACY_RPC -> throw IllegalStateException(
+                "BAIDU_LEGACY_RPC is not mapped by ProviderRegistry"
             )
         }
     }
@@ -158,9 +158,13 @@ object AiServiceFactory {
                 topP = settings.topP,
                 frequencyPenalty = settings.frequencyPenalty,
                 presencePenalty = settings.presencePenalty,
-                useResponsesApi = settings.customProtocol == "responses",
-                capabilityOverrides = com.example.rokidphone.ai.catalog.ModelCapabilityResolver
-                    .overridesFromKeys(AiProvider.CUSTOM, settings.customCapabilityOverrides)
+                useResponsesApi = settings.customProtocol == CUSTOM_PROTOCOL_RESPONSES,
+                capabilityOverrides = ModelCapabilityResolver
+                    .overridesFromKeys(
+                        AiProvider.CUSTOM,
+                        settings.customCapabilityOverrides,
+                        modelId = settings.customModelName.ifBlank { modelId }
+                    )
             )
 
             else -> OpenAiCompatibleService(
@@ -189,24 +193,42 @@ object AiServiceFactory {
             workspaceSlug = settings.anythingllmWorkspaceSlug
         )
         val anythingLlmProvider = AnythingLLMProvider()
+        // Guarded by historyMutex; the user turn is committed only on success
+        // and the window is bounded so long sessions cannot grow without limit.
         val history = mutableListOf<ChatMessage>()
+        val historyMutex = Mutex()
         return object : AiServiceProvider {
             override val provider: AiProvider = AiProvider.ANYTHINGLLM
             override suspend fun transcribe(pcmAudioData: ByteArray, languageCode: String): SpeechResult =
                 SpeechResult.Error("AnythingLLM does not support speech recognition")
             override suspend fun chat(userMessage: String): String {
-                history.add(ChatMessage(MessageRole.USER, userMessage))
-                return when (val result = anythingLlmProvider.generateText(providerSetting, history)) {
-                    is GenerationResult.Success -> {
-                        history.add(ChatMessage(MessageRole.ASSISTANT, result.text))
-                        result.text
+                historyMutex.lock()
+                try {
+                    val pending = history + ChatMessage(MessageRole.USER, userMessage)
+                    return when (val result = anythingLlmProvider.generateText(providerSetting, pending)) {
+                        is GenerationResult.Success -> {
+                            history.add(ChatMessage(MessageRole.USER, userMessage))
+                            history.add(ChatMessage(MessageRole.ASSISTANT, result.text))
+                            while (history.size > ANYTHINGLLM_MAX_HISTORY_MESSAGES) {
+                                history.removeAt(0)
+                            }
+                            result.text
+                        }
+                        is GenerationResult.Error -> {
+                            Log.w(TAG, "AnythingLLM chat failed (code=${result.code}): ${result.message}")
+                            "Error: ${result.message}"
+                        }
                     }
-                    is GenerationResult.Error -> "Error: ${result.message}"
+                } finally {
+                    historyMutex.unlock()
                 }
             }
             override suspend fun analyzeImage(imageData: ByteArray, prompt: String): String =
                 "AnythingLLM does not support image analysis"
-            override fun clearHistory() { history.clear() }
+            override fun clearHistory() {
+                // clearHistory is non-suspend; block briefly on the same mutex.
+                runBlocking { historyMutex.withLock { history.clear() } }
+            }
         }
     }
 
@@ -267,12 +289,16 @@ object AiServiceFactory {
             AiProvider.CUSTOM -> OpenAiCompatibleService(
                 apiKey = settings.customApiKey,
                 baseUrl = settings.getCurrentBaseUrl(),
-                modelId = settings.customModelName.ifBlank { settings.aiModelId },
+                modelId = settings.customModelName.ifBlank { settings.getCurrentModelId() },
                 systemPrompt = "",
                 providerType = AiProvider.CUSTOM,
-                useResponsesApi = settings.customProtocol == "responses",
-                capabilityOverrides = com.example.rokidphone.ai.catalog.ModelCapabilityResolver
-                    .overridesFromKeys(AiProvider.CUSTOM, settings.customCapabilityOverrides)
+                useResponsesApi = settings.customProtocol == CUSTOM_PROTOCOL_RESPONSES,
+                capabilityOverrides = ModelCapabilityResolver
+                    .overridesFromKeys(
+                        AiProvider.CUSTOM,
+                        settings.customCapabilityOverrides,
+                        modelId = settings.customModelName.ifBlank { settings.getCurrentModelId() }
+                    )
             )
         }
     }
@@ -297,6 +323,7 @@ object AiServiceFactory {
      * endpoint get a service here.
      */
     fun createSpeechService(provider: AiProvider, apiKey: String): AiServiceProvider? {
+        if (apiKey.isBlank()) return null
         return when (provider) {
             AiProvider.GEMINI -> GeminiService(apiKey = apiKey)
             AiProvider.OPENAI -> OpenAiCompatibleService(

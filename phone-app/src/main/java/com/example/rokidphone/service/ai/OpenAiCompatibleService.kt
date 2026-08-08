@@ -589,6 +589,7 @@ open class OpenAiCompatibleService(
                     val item = json.optJSONObject("item")
                     if (item != null && item.optString("type") == "function_call") {
                         events += AiStreamEvent.ToolCallDelta(
+                            index = 0,
                             id = item.optString("call_id").ifBlank { null },
                             name = item.optString("name").ifBlank { null },
                             argumentsDelta = item.optString("arguments").ifBlank { null }
@@ -618,6 +619,7 @@ open class OpenAiCompatibleService(
                             val tc = toolCalls.optJSONObject(i) ?: continue
                             val fn = tc.optJSONObject("function")
                             events += AiStreamEvent.ToolCallDelta(
+                                index = tc.optInt("index", i),
                                 id = tc.optString("id").ifBlank { null },
                                 name = fn?.optString("name")?.ifBlank { null },
                                 argumentsDelta = fn?.optString("arguments")?.ifBlank { null }

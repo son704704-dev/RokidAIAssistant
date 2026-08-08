@@ -10,6 +10,10 @@ package com.example.rokidphone.ai.catalog
  *  4. a manual user override (Custom provider).
  *
  * They are never inferred from substrings in the model ID.
+ *
+ * Construction and `copy` MUST use named arguments: with this many Boolean
+ * flags, a single mis-ordered positional argument silently flips a capability
+ * with no compiler error.
  */
 data class ModelCapabilities(
     val textInput: Boolean = true,
@@ -26,11 +30,21 @@ data class ModelCapabilities(
     val maxContextTokens: Long? = null,
     val maxOutputTokens: Long? = null
 ) {
+    init {
+        // null means "unknown"; 0/negative is a parse artefact, not a real limit.
+        require(maxContextTokens == null || maxContextTokens > 0) {
+            "maxContextTokens must be positive or null (unknown): $maxContextTokens"
+        }
+        require(maxOutputTokens == null || maxOutputTokens > 0) {
+            "maxOutputTokens must be positive or null (unknown): $maxOutputTokens"
+        }
+    }
+
     companion object {
         /** Conservative default: plain text chat only. */
         val TEXT_ONLY = ModelCapabilities()
 
-        fun textChat(streaming: Boolean = true, tools: Boolean = false) = ModelCapabilities(
+        fun textChat(streaming: Boolean = false, tools: Boolean = false) = ModelCapabilities(
             streaming = streaming,
             toolCalling = tools
         )
@@ -42,7 +56,10 @@ enum class ModelStatus {
     STABLE,
     PREVIEW,
     DEPRECATED,
-    LEGACY
+    LEGACY,
+
+    /** Provider reported a status this app does not recognise. */
+    UNKNOWN
 }
 
 /** Where the model catalog currently in use came from. */

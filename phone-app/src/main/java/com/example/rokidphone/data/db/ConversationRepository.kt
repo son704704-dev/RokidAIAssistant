@@ -2,19 +2,20 @@ package com.example.rokidphone.data.db
 
 import android.content.Context
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
+import androidx.room.withTransaction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import java.util.UUID
 
 /**
  * Conversation Database Repository
  * Provides CRUD operations for conversations and messages
  */
-class ConversationRepository(context: Context) {
+class ConversationRepository private constructor(context: Context) {
     
     companion object {
         private const val TAG = "ConversationRepository"
@@ -27,6 +28,10 @@ class ConversationRepository(context: Context) {
                 instance ?: ConversationRepository(context.applicationContext).also { instance = it }
             }
         }
+
+        /** Escape LIKE wildcards ('%', '_') and the escape char ('\') in user input. */
+        private fun escapeLikeQuery(query: String): String =
+            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     }
     
     private val database = AppDatabase.getInstance(context)
@@ -56,8 +61,8 @@ class ConversationRepository(context: Context) {
     /**
      * Get conversation by ID
      */
-    suspend fun getConversationById(id: String): Conversation? {
-        return conversationDao.getConversationById(id)?.toConversation()
+    suspend fun getConversationById(id: String): Conversation? = withContext(Dispatchers.IO) {
+        conversationDao.getConversationById(id)?.toConversation()
     }
     
     /**
@@ -71,7 +76,7 @@ class ConversationRepository(context: Context) {
      * Search conversations
      */
     fun searchConversations(query: String): Flow<List<Conversation>> {
-        return conversationDao.searchConversations(query).map { entities ->
+        return conversationDao.searchConversations(escapeLikeQuery(query)).map { entities ->
             entities.map { it.toConversation() }
         }
     }
@@ -82,8 +87,10 @@ class ConversationRepository(context: Context) {
      */
     suspend fun findTodayVoiceSession(): Conversation? = withContext(Dispatchers.IO) {
         try {
-            // Get today's date string in the same format used for voice session titles
-            val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+            // Get today's date string in the same format used for voice session titles.
+            // Locale.US: default locales (e.g. ar, th, fa) can emit non-Gregorian dates /
+            // non-ASCII digits that would never match persisted titles.
+            val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             val todayDate = dateFormat.format(java.util.Date())
             
             // Search for voice sessions with today's date in the title
@@ -100,6 +107,8 @@ class ConversationRepository(context: Context) {
             
             // Return the most recent one (highest updatedAt)
             todayVoiceSessions.maxByOrNull { it.updatedAt }?.toConversation()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error finding today's voice session", e)
             null
@@ -204,8 +213,8 @@ class ConversationRepository(context: Context) {
     /**
      * Synchronously get all messages for a conversation
      */
-    suspend fun getMessagesForConversationSync(conversationId: String): List<Message> {
-        return messageDao.getMessagesForConversationSync(conversationId).map { it.toMessage() }
+    suspend fun getMessagesForConversationSync(conversationId: String): List<Message> = withContext(Dispatchers.IO) {
+        messageDao.getMessagesForConversationSync(conversationId).map { it.toMessage() }
     }
     
     /**
@@ -239,7 +248,7 @@ class ConversationRepository(context: Context) {
         val entity = MessageEntity(
             id = id,
             conversationId = conversationId,
-            role = role.name.lowercase(),
+            role = role.name.lowercase(Locale.ROOT),
             content = content,
             createdAt = now,
             modelId = modelId,
@@ -249,10 +258,14 @@ class ConversationRepository(context: Context) {
             finishReason = finishReason
         )
         
-        messageDao.insertMessage(entity)
-        conversationDao.incrementMessageCount(conversationId)
+        // Insert + counter bump must be atomic, otherwise messageCount drifts permanently.
+        database.withTransaction {
+            messageDao.insertMessage(entity)
+            conversationDao.incrementMessageCount(conversationId)
+        }
         
-        Log.d(TAG, "Added message to conversation $conversationId: ${content.take(50)}...")
+        // Never log message content (PII leak on release builds); log id/length only.
+        Log.d(TAG, "Added message to conversation $conversationId (len=${content.length})")
         
         entity.toMessage()
     }
@@ -303,22 +316,27 @@ class ConversationRepository(context: Context) {
         tokenCount: Int? = null,
         finishReason: String? = null
     ) = withContext(Dispatchers.IO) {
-        val existing = messageDao.getMessageById(messageId) ?: return@withContext
-        
-        val updated = existing.copy(
-            content = content,
-            tokenCount = tokenCount ?: existing.tokenCount,
-            finishReason = finishReason ?: existing.finishReason
-        )
-        
-        messageDao.updateMessage(updated)
+        // Atomic targeted UPDATE: read-modify-write loses concurrent streaming chunks.
+        val rowsUpdated = messageDao.updateContent(messageId, content, tokenCount, finishReason)
+        if (rowsUpdated == 0) {
+            Log.w(TAG, "updateMessageContent: no message found with id $messageId")
+        }
     }
     
     /**
      * Delete a message
      */
     suspend fun deleteMessage(id: String) = withContext(Dispatchers.IO) {
-        messageDao.deleteMessageById(id)
+        val message = messageDao.getMessageById(id)
+        if (message == null) {
+            Log.w(TAG, "deleteMessage: no message found with id $id")
+            return@withContext
+        }
+        // Keep the denormalized message_count in sync with the deletion.
+        database.withTransaction {
+            messageDao.deleteMessageById(id)
+            conversationDao.decrementMessageCount(message.conversationId)
+        }
         Log.d(TAG, "Deleted message: $id")
     }
     
@@ -326,7 +344,10 @@ class ConversationRepository(context: Context) {
      * Clear all messages in a conversation
      */
     suspend fun clearConversationMessages(conversationId: String) = withContext(Dispatchers.IO) {
-        messageDao.deleteMessagesForConversation(conversationId)
+        database.withTransaction {
+            messageDao.deleteMessagesForConversation(conversationId)
+            conversationDao.resetMessageCount(conversationId)
+        }
         Log.d(TAG, "Cleared messages for conversation: $conversationId")
     }
     
@@ -430,7 +451,11 @@ private fun MessageEntity.toMessage(): Message {
     return Message(
         id = id,
         conversationId = conversationId,
-        role = MessageRole.valueOf(role.uppercase()),
+        // valueOf() crashes every Flow collector on a single legacy/unknown role value.
+        role = MessageRole.entries.firstOrNull { it.name == role.uppercase(Locale.ROOT) }
+            ?: MessageRole.USER.also {
+                Log.w("ConversationRepository", "Unknown message role '$role', defaulting to USER")
+            },
         content = content,
         createdAt = createdAt,
         tokenCount = tokenCount,

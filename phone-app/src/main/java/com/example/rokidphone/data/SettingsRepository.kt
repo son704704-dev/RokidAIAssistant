@@ -9,6 +9,7 @@ import com.example.rokidphone.service.stt.SttProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.updateAndGet
 import java.util.Locale
 
 /**
@@ -41,6 +42,7 @@ class SettingsRepository(private val context: Context) {
         private const val KEY_BAIDU_SECRET_KEY = "baidu_secret_key"
         private const val KEY_PERPLEXITY_API_KEY = "perplexity_api_key"
         private const val KEY_MOONSHOT_API_KEY = "moonshot_api_key"
+        private const val KEY_MISTRAL_API_KEY = "mistral_api_key"
         private const val KEY_CUSTOM_API_KEY = "custom_api_key"
         private const val KEY_BAIDU_QIANFAN_API_KEY = "baidu_qianfan_api_key"
         private const val KEY_BAIDU_USE_LEGACY_AUTH = "baidu_use_legacy_auth"
@@ -206,12 +208,13 @@ class SettingsRepository(private val context: Context) {
             alibabaCustomBaseUrl = prefs.getString(KEY_ALIBABA_CUSTOM_BASE_URL, "") ?: "",
             perplexityApiKey = prefs.getString(KEY_PERPLEXITY_API_KEY, "") ?: "",
             moonshotApiKey = prefs.getString(KEY_MOONSHOT_API_KEY, "") ?: "",
+            mistralApiKey = prefs.getString(KEY_MISTRAL_API_KEY, "") ?: "",
             customApiKey = prefs.getString(KEY_CUSTOM_API_KEY, "") ?: "",
             customProtocol = prefs.getString(KEY_CUSTOM_PROTOCOL, "chat_completions") ?: "chat_completions",
             customModelsPath = prefs.getString(KEY_CUSTOM_MODELS_PATH, "models") ?: "models",
-            customCapabilityOverrides = (
+            customCapabilityOverrides = parseCapabilityOverrides(
                 prefs.getString(KEY_CUSTOM_CAPABILITY_OVERRIDES, "") ?: ""
-                ).split(',').map { it.trim() }.filter { it.isNotBlank() }.toSet(),
+            ),
             anythingllmServerUrl = prefs.getString(KEY_ANYTHINGLLM_SERVER_URL, "") ?: "",
             anythingllmApiKey = prefs.getString(KEY_ANYTHINGLLM_API_KEY, "") ?: "",
             anythingllmWorkspaceSlug = prefs.getString(KEY_ANYTHINGLLM_WORKSPACE_SLUG, "") ?: "",
@@ -261,21 +264,21 @@ class SettingsRepository(private val context: Context) {
         // If it matches current locale's default, it's fine
         if (prompt == currentDefault) return false
         
-        // Check if it's a default prompt from any other language
-        for (lang in AppLanguage.entries) {
+        // Check if it's a default prompt from any other language (cached: resolving a
+        // per-language prompt creates a Configuration + context, which is expensive).
+        return localizedDefaultPrompts.values.any { it == prompt }
+    }
+
+    /** Cached per-language default prompts (resources for a language never change at runtime). */
+    private val localizedDefaultPrompts: Map<AppLanguage, String> by lazy {
+        AppLanguage.entries.mapNotNull { lang ->
             try {
-                val langDefault = getDefaultSystemPromptForLanguage(lang)
-                if (prompt == langDefault) {
-                    // It's a default prompt from a different language - needs sync
-                    return true
-                }
+                lang to getDefaultSystemPromptForLanguage(lang)
             } catch (e: Exception) {
-                // Ignore errors
+                android.util.Log.w("SettingsRepository", "Failed to resolve default prompt for $lang", e)
+                null
             }
-        }
-        
-        // It's a custom prompt, don't touch it
-        return false
+        }.toMap()
     }
     
     /**
@@ -296,7 +299,9 @@ class SettingsRepository(private val context: Context) {
                 }
                 if (map.isNotEmpty()) return map
             } catch (e: Exception) {
-                // Corrupted value: reseed below.
+                // Corrupted value: reseed below. Log it — otherwise the per-provider
+                // selections are silently discarded with no way to diagnose the data loss.
+                android.util.Log.w("SettingsRepository", "Failed to parse provider model ids; reseeding from legacy model id", e)
             }
         }
         return if (legacyModelId.isNotBlank()) mapOf(activeProvider.name to legacyModelId) else emptyMap()
@@ -306,6 +311,21 @@ class SettingsRepository(private val context: Context) {
         val obj = org.json.JSONObject()
         map.forEach { (k, v) -> obj.put(k, v) }
         return obj.toString()
+    }
+
+    /**
+     * Parse capability overrides. Current format is a JSON array (a comma join is lossy
+     * for values containing ','); falls back to the legacy comma-separated format so
+     * existing installs keep their overrides.
+     */
+    private fun parseCapabilityOverrides(raw: String): Set<String> {
+        if (raw.isBlank()) return emptySet()
+        return try {
+            val array = org.json.JSONArray(raw)
+            (0 until array.length()).map { array.getString(it).trim() }.filter { it.isNotBlank() }.toSet()
+        } catch (e: org.json.JSONException) {
+            raw.split(',').map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        }
     }
 
     /**
@@ -337,9 +357,10 @@ class SettingsRepository(private val context: Context) {
             putString(KEY_ALIBABA_CUSTOM_BASE_URL, settings.alibabaCustomBaseUrl)
             putString(KEY_CUSTOM_PROTOCOL, settings.customProtocol)
             putString(KEY_CUSTOM_MODELS_PATH, settings.customModelsPath)
-            putString(KEY_CUSTOM_CAPABILITY_OVERRIDES, settings.customCapabilityOverrides.joinToString(","))
+            putString(KEY_CUSTOM_CAPABILITY_OVERRIDES, org.json.JSONArray(settings.customCapabilityOverrides.toList()).toString())
             putString(KEY_PERPLEXITY_API_KEY, settings.perplexityApiKey)
             putString(KEY_MOONSHOT_API_KEY, settings.moonshotApiKey)
+            putString(KEY_MISTRAL_API_KEY, settings.mistralApiKey)
             putString(KEY_CUSTOM_API_KEY, settings.customApiKey)
             putString(KEY_ANYTHINGLLM_SERVER_URL, settings.anythingllmServerUrl)
             putString(KEY_ANYTHINGLLM_API_KEY, settings.anythingllmApiKey)
@@ -369,130 +390,138 @@ class SettingsRepository(private val context: Context) {
     }
 
     /**
+     * Atomically apply [transform] to the current settings and persist the result.
+     * Replaces the non-atomic getSettings() -> copy() -> saveSettings() pattern, where
+     * two concurrent updates could silently drop one another's changes.
+     */
+    private inline fun updateSettings(transform: (ApiSettings) -> ApiSettings) {
+        val updated = _settingsFlow.updateAndGet(transform)
+        persistSettings(updated)
+    }
+
+    /**
      * Update single setting
      */
     fun updateAiProvider(provider: AiProvider) {
-        val current = getSettings()
         // Restore the model the user last selected for this provider
         // (per-provider model memory), not the first catalog entry.
-        val model = current.getModelIdForProvider(provider)
-        saveSettings(current.copy(aiProvider = provider, aiModelId = model))
+        updateSettings { it.copy(aiProvider = provider, aiModelId = it.getModelIdForProvider(provider)) }
     }
 
     fun updateAiModel(modelId: String) {
-        saveSettings(getSettings().withModelForProvider(getSettings().aiProvider, modelId))
+        updateSettings { it.withModelForProvider(it.aiProvider, modelId) }
     }
 
     fun updateBaiduQianfanApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(baiduQianfanApiKey = apiKey))
+        updateSettings { it.copy(baiduQianfanApiKey = apiKey) }
     }
 
     fun updateBaiduUseLegacyAuth(useLegacy: Boolean) {
-        saveSettings(getSettings().copy(baiduUseLegacyAuth = useLegacy))
+        updateSettings { it.copy(baiduUseLegacyAuth = useLegacy) }
     }
 
     fun updateAlibabaRegion(region: String) {
-        saveSettings(getSettings().copy(alibabaRegion = region))
+        updateSettings { it.copy(alibabaRegion = region) }
     }
 
     fun updateAlibabaCustomBaseUrl(baseUrl: String) {
-        saveSettings(getSettings().copy(alibabaCustomBaseUrl = baseUrl))
+        updateSettings { it.copy(alibabaCustomBaseUrl = baseUrl) }
     }
 
     fun updateCustomProtocol(protocol: String) {
-        saveSettings(getSettings().copy(customProtocol = protocol))
+        updateSettings { it.copy(customProtocol = protocol) }
     }
 
     fun updateCustomModelsPath(path: String) {
-        saveSettings(getSettings().copy(customModelsPath = path))
+        updateSettings { it.copy(customModelsPath = path) }
     }
 
     fun updateCustomCapabilityOverrides(overrides: Set<String>) {
-        saveSettings(getSettings().copy(customCapabilityOverrides = overrides))
+        updateSettings { it.copy(customCapabilityOverrides = overrides) }
     }
 
     fun updateGeminiApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(geminiApiKey = apiKey))
+        updateSettings { it.copy(geminiApiKey = apiKey) }
     }
     
     fun updateOpenaiApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(openaiApiKey = apiKey))
+        updateSettings { it.copy(openaiApiKey = apiKey) }
     }
     
     fun updateAnthropicApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(anthropicApiKey = apiKey))
+        updateSettings { it.copy(anthropicApiKey = apiKey) }
     }
     
     fun updateDeepseekApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(deepseekApiKey = apiKey))
+        updateSettings { it.copy(deepseekApiKey = apiKey) }
     }
     
     fun updateGroqApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(groqApiKey = apiKey))
+        updateSettings { it.copy(groqApiKey = apiKey) }
     }
     
     fun updateXaiApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(xaiApiKey = apiKey))
+        updateSettings { it.copy(xaiApiKey = apiKey) }
     }
     
     fun updateAlibabaApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(alibabaApiKey = apiKey))
+        updateSettings { it.copy(alibabaApiKey = apiKey) }
     }
     
     fun updateZhipuApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(zhipuApiKey = apiKey))
+        updateSettings { it.copy(zhipuApiKey = apiKey) }
     }
     
     fun updateBaiduApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(baiduApiKey = apiKey))
+        updateSettings { it.copy(baiduApiKey = apiKey) }
     }
     
     fun updateBaiduSecretKey(secretKey: String) {
-        saveSettings(getSettings().copy(baiduSecretKey = secretKey))
+        updateSettings { it.copy(baiduSecretKey = secretKey) }
     }
     
     fun updatePerplexityApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(perplexityApiKey = apiKey))
+        updateSettings { it.copy(perplexityApiKey = apiKey) }
     }
     
     fun updateMoonshotApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(moonshotApiKey = apiKey))
+        updateSettings { it.copy(moonshotApiKey = apiKey) }
     }
     
     fun updateMistralApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(mistralApiKey = apiKey))
+        updateSettings { it.copy(mistralApiKey = apiKey) }
     }
 
     fun updateAnythingLlmServerUrl(url: String) {
-        saveSettings(getSettings().copy(anythingllmServerUrl = url))
+        updateSettings { it.copy(anythingllmServerUrl = url) }
     }
 
     fun updateAnythingLlmApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(anythingllmApiKey = apiKey))
+        updateSettings { it.copy(anythingllmApiKey = apiKey) }
     }
 
     fun updateAnythingLlmWorkspaceSlug(slug: String) {
-        saveSettings(getSettings().copy(anythingllmWorkspaceSlug = slug))
+        updateSettings { it.copy(anythingllmWorkspaceSlug = slug) }
     }
 
     fun updateCustomApiKey(apiKey: String) {
-        saveSettings(getSettings().copy(customApiKey = apiKey))
+        updateSettings { it.copy(customApiKey = apiKey) }
     }
     
     fun updateCustomBaseUrl(baseUrl: String) {
-        saveSettings(getSettings().copy(customBaseUrl = baseUrl))
+        updateSettings { it.copy(customBaseUrl = baseUrl) }
     }
     
     fun updateCustomModelName(modelName: String) {
-        saveSettings(getSettings().copy(customModelName = modelName))
+        updateSettings { it.copy(customModelName = modelName) }
     }
     
     fun updateSttProvider(provider: SttProvider) {
-        saveSettings(getSettings().copy(sttProvider = provider))
+        updateSettings { it.copy(sttProvider = provider) }
     }
     
     fun updateSystemPrompt(prompt: String) {
-        saveSettings(getSettings().copy(systemPrompt = prompt))
+        updateSettings { it.copy(systemPrompt = prompt) }
     }
     
     /**
@@ -520,14 +549,8 @@ class SettingsRepository(private val context: Context) {
         val currentPrompt = getSettings().systemPrompt
         if (currentPrompt.isEmpty()) return true
         
-        // Check against all language defaults
-        return AppLanguage.entries.any { lang ->
-            try {
-                getDefaultSystemPromptForLanguage(lang) == currentPrompt
-            } catch (e: Exception) {
-                false
-            }
-        }
+        // Check against all language defaults (cached)
+        return localizedDefaultPrompts.values.any { it == currentPrompt }
     }
     
     /**
@@ -545,27 +568,30 @@ class SettingsRepository(private val context: Context) {
  */
 private class InMemorySharedPreferences : SharedPreferences {
 
+    // All map access is guarded by this single prefs-level lock: a plain mutableMapOf
+    // shared by every Editor and getter can corrupt or throw ConcurrentModificationException.
+    private val lock = Any()
     private val data = mutableMapOf<String, Any?>()
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<SharedPreferences.OnSharedPreferenceChangeListener>()
 
-    override fun getAll(): Map<String, *> = data.toMap()
+    override fun getAll(): Map<String, *> = synchronized(lock) { data.toMap() }
 
     @Suppress("UNCHECKED_CAST")
-    override fun getString(key: String, defValue: String?): String? = data[key] as? String ?: defValue
+    override fun getString(key: String, defValue: String?): String? = synchronized(lock) { data[key] as? String ?: defValue }
 
     @Suppress("UNCHECKED_CAST")
     override fun getStringSet(key: String, defValues: Set<String>?): Set<String>? =
-        (data[key] as? Set<String>) ?: defValues
+        synchronized(lock) { (data[key] as? Set<String>) ?: defValues }
 
-    override fun getInt(key: String, defValue: Int): Int = data[key] as? Int ?: defValue
+    override fun getInt(key: String, defValue: Int): Int = synchronized(lock) { data[key] as? Int ?: defValue }
 
-    override fun getLong(key: String, defValue: Long): Long = data[key] as? Long ?: defValue
+    override fun getLong(key: String, defValue: Long): Long = synchronized(lock) { data[key] as? Long ?: defValue }
 
-    override fun getFloat(key: String, defValue: Float): Float = data[key] as? Float ?: defValue
+    override fun getFloat(key: String, defValue: Float): Float = synchronized(lock) { data[key] as? Float ?: defValue }
 
-    override fun getBoolean(key: String, defValue: Boolean): Boolean = data[key] as? Boolean ?: defValue
+    override fun getBoolean(key: String, defValue: Boolean): Boolean = synchronized(lock) { data[key] as? Boolean ?: defValue }
 
-    override fun contains(key: String): Boolean = data.containsKey(key)
+    override fun contains(key: String): Boolean = synchronized(lock) { data.containsKey(key) }
 
     override fun edit(): SharedPreferences.Editor = Editor()
 
@@ -600,12 +626,21 @@ private class InMemorySharedPreferences : SharedPreferences {
             applyChanges()
         }
 
-        @Synchronized
         private fun applyChanges() {
-            if (clearAll) data.clear()
-            removals.forEach { data.remove(it) }
-            pending.forEach { (k, v) -> data[k] = v }
-            val changedKeys = pending.keys + removals
+            // Lock the shared prefs object (not this Editor) for mutual exclusion
+            // between different Editor instances.
+            val changedKeys = synchronized(lock) {
+                if (clearAll) data.clear()
+                removals.forEach { data.remove(it) }
+                pending.forEach { (k, v) -> data[k] = v }
+                val keys = pending.keys + removals
+                // Reset pending state: a second apply()/commit() must not re-apply stale changes.
+                pending.clear()
+                removals.clear()
+                clearAll = false
+                keys
+            }
+            // Notify listeners outside the lock to avoid re-entrancy/deadlock.
             listeners.forEach { listener ->
                 changedKeys.forEach { key -> listener.onSharedPreferenceChanged(this@InMemorySharedPreferences, key) }
             }

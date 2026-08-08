@@ -38,10 +38,14 @@ class SpeechResultTest {
     @Test
     fun `SpeechErrorCode requiresDetail - only expected codes require detail`() {
         // 測試：僅特定錯誤碼需要 detail 參數
+        // NETWORK_ERROR/UNKNOWN map to the format string stt_error_transcription_error,
+        // so they require a detail argument as well.
         val expected = setOf(
             SpeechErrorCode.TRANSCRIPTION_ERROR,
             SpeechErrorCode.PROVIDER_NOT_SUPPORTED,
-            SpeechErrorCode.RECOGNITION_FAILED
+            SpeechErrorCode.RECOGNITION_FAILED,
+            SpeechErrorCode.NETWORK_ERROR,
+            SpeechErrorCode.UNKNOWN
         )
 
         for (code in SpeechErrorCode.entries) {
@@ -76,13 +80,14 @@ class SpeechResultTest {
     }
 
     @Test
-    fun `SpeechResult Error getLocalizedMessage - detail codes with null detail use empty`() {
-        // 測試：detail 缺省時應以空字串填入格式
+    fun `SpeechResult Error getLocalizedMessage - detail codes with null detail fall back to message`() {
+        // 測試：detail 缺省時應退回使用 message 作為格式參數（避免結尾殘留冒號）
         val context = RuntimeEnvironment.getApplication()
         val code = SpeechErrorCode.TRANSCRIPTION_ERROR
-        val error = SpeechResult.Error(message = "ignored", errorCode = code, errorDetail = null)
+        val error = SpeechResult.Error(message = "fallback detail", errorCode = code, errorDetail = null)
 
-        assertThat(error.getLocalizedMessage(context)).isEqualTo(context.getString(code.getStringResId(), ""))
+        assertThat(error.getLocalizedMessage(context))
+            .isEqualTo(context.getString(code.getStringResId(), "fallback detail"))
     }
 
     @Test

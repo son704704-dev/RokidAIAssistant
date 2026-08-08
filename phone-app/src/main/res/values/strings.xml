@@ -312,6 +312,9 @@
     <string name="stt_error_provider_not_supported">%s does not support speech recognition, please use another service</string>
     <string name="stt_error_recognition_failed">Speech recognition failed: %s</string>
     
+    <!-- API Key -->
+    <string name="api_key_not_configured">API key not configured. Please set up an API key in Settings.</string>
+    
     <!-- Photo Transfer -->
     <string name="photo_received">Photo received from glasses</string>
     <string name="photo_processing_failed">Failed to process photo</string>

@@ -1,9 +1,7 @@
 package com.example.rokidphone.data
 
-import android.app.LocaleManager
 import android.content.Context
-import android.os.Build
-import android.os.LocaleList
+import androidx.annotation.MainThread
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
 import java.util.Locale
@@ -21,9 +19,16 @@ object LanguageManager {
      * Get current language setting
      */
     fun getCurrentLanguage(context: Context): AppLanguage {
+        // On Android 13+ the user can change the per-app language from system
+        // Settings; AppCompatDelegate is the source of truth when set.
+        val appLocales = AppCompatDelegate.getApplicationLocales()
+        if (!appLocales.isEmpty) {
+            appLocales[0]?.let { return AppLanguage.fromLocale(it) }
+        }
+
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedCode = prefs.getString(KEY_LANGUAGE_CODE, null)
-        
+
         return if (savedCode != null) {
             AppLanguage.fromCode(savedCode)
         } else {
@@ -47,10 +52,15 @@ object LanguageManager {
     }
     
     /**
-     * Apply language setting
+     * Apply language setting.
+     * Must be called on the main thread: AppCompatDelegate.setApplicationLocales
+     * may recreate the current Activity on pre-API-33 devices.
      */
+    @MainThread
     private fun applyLanguage(language: AppLanguage) {
         val localeList = LocaleListCompat.forLanguageTags(language.code)
+        // Skip no-op calls to avoid unnecessary Activity recreation
+        if (AppCompatDelegate.getApplicationLocales() == localeList) return
         AppCompatDelegate.setApplicationLocales(localeList)
     }
     
@@ -65,7 +75,5 @@ object LanguageManager {
     /**
      * Get Locale object for language
      */
-    fun getLocale(language: AppLanguage): Locale {
-        return language.locale
-    }
+    fun getLocale(language: AppLanguage): Locale = language.locale
 }

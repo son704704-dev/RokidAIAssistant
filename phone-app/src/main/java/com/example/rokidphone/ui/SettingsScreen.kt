@@ -1169,6 +1169,7 @@ private fun StatusChip(status: com.example.rokidphone.ai.catalog.ModelStatus) {
         com.example.rokidphone.ai.catalog.ModelStatus.LEGACY -> SmallStatusChip(
             stringResource(R.string.status_legacy), MaterialTheme.colorScheme.surfaceVariant
         )
+        com.example.rokidphone.ai.catalog.ModelStatus.UNKNOWN -> Unit // unrecognized status: no chip
     }
 }
 

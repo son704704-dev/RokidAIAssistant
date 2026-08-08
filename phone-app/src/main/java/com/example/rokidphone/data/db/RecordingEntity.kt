@@ -1,5 +1,6 @@
 package com.example.rokidphone.data.db
 
+import android.util.Log
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
@@ -115,12 +116,17 @@ interface RecordingDao {
     @Query("SELECT * FROM recordings WHERE id = :id")
     fun getRecordingByIdFlow(id: String): Flow<RecordingEntity?>
     
-    @Query("SELECT * FROM recordings WHERE title LIKE '%' || :query || '%' OR transcript LIKE '%' || :query || '%' ORDER BY created_at DESC")
+    // Caller must escape '%', '_' and '\' in `query` before calling.
+    @Query("SELECT * FROM recordings WHERE title LIKE '%' || :query || '%' ESCAPE '\' OR transcript LIKE '%' || :query || '%' ESCAPE '\' ORDER BY created_at DESC")
     fun searchRecordings(query: String): Flow<List<RecordingEntity>>
     
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(recording: RecordingEntity)
     
+    /**
+     * Whole-entity update. NOTE: unlike the targeted UPDATE queries below, this does NOT
+     * refresh `updated_at` — the caller must copy the entity with a new timestamp first.
+     */
     @Update
     suspend fun update(recording: RecordingEntity)
     
@@ -165,8 +171,8 @@ interface RecordingDao {
     @Query("UPDATE recordings SET status = :status, error_message = :errorMessage, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateError(
         id: String,
-        status: RecordingStatus = RecordingStatus.ERROR,
         errorMessage: String?,
+        status: RecordingStatus = RecordingStatus.ERROR,
         updatedAt: Long = System.currentTimeMillis()
     )
     
@@ -183,15 +189,22 @@ interface RecordingDao {
 class RecordingConverters {
     @TypeConverter
     fun fromRecordingSource(source: RecordingSource): String = source.name
-    
+
+    // valueOf() would crash row-mapping on unknown/legacy values; fall back safely.
     @TypeConverter
-    fun toRecordingSource(value: String): RecordingSource = 
-        RecordingSource.valueOf(value)
-    
+    fun toRecordingSource(value: String): RecordingSource =
+        RecordingSource.entries.firstOrNull { it.name == value }
+            ?: RecordingSource.PHONE.also {
+                Log.w("RecordingConverters", "Unknown RecordingSource '$value', defaulting to PHONE")
+            }
+
     @TypeConverter
     fun fromRecordingStatus(status: RecordingStatus): String = status.name
-    
+
     @TypeConverter
-    fun toRecordingStatus(value: String): RecordingStatus = 
-        RecordingStatus.valueOf(value)
+    fun toRecordingStatus(value: String): RecordingStatus =
+        RecordingStatus.entries.firstOrNull { it.name == value }
+            ?: RecordingStatus.ERROR.also {
+                Log.w("RecordingConverters", "Unknown RecordingStatus '$value', defaulting to ERROR")
+            }
 }

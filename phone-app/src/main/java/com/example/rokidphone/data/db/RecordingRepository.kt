@@ -6,11 +6,14 @@ import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -34,9 +37,13 @@ sealed class RecordingState {
  * Repository for managing audio recordings
  */
 class RecordingRepository private constructor(
-    private val context: Context,
-    private val scope: CoroutineScope
+    private val context: Context
 ) {
+    // Process-wide singleton must own its scope: capturing a caller's scope (e.g. a
+    // viewModelScope passed on the first getInstance call) breaks the duration ticker
+    // forever once that scope is cancelled.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private val recordingDao = AppDatabase.getInstance(context).recordingDao()
     private val recordingsDir = File(context.filesDir, "recordings").apply { mkdirs() }
     
@@ -44,24 +51,35 @@ class RecordingRepository private constructor(
     private val _recordingState = MutableStateFlow<RecordingState>(RecordingState.Idle)
     val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
     
-    // Current recording
-    private var mediaRecorder: MediaRecorder? = null
-    private var currentRecordingFile: File? = null
-    private var currentRecordingId: String? = null
-    private var recordingStartTime: Long = 0
+    // Guards start/stop state transitions against concurrent calls
+    private val recordingMutex = Mutex()
+
+    // Current recording (mutated from IO threads; @Volatile for visibility)
+    @Volatile private var mediaRecorder: MediaRecorder? = null
+    @Volatile private var currentRecordingFile: File? = null
+    @Volatile private var currentRecordingId: String? = null
+    @Volatile private var recordingStartTime: Long = 0
     
     // Duration update job
     private var durationUpdateJob: kotlinx.coroutines.Job? = null
     
     companion object {
+        // Glasses audio format: 16 kHz, 16-bit, mono PCM (2 bytes per sample)
+        private const val GLASSES_SAMPLE_RATE = 16000
+        private const val GLASSES_BYTES_PER_SAMPLE = 2
+
         @Volatile
         private var instance: RecordingRepository? = null
         
-        fun getInstance(context: Context, scope: CoroutineScope): RecordingRepository {
+        fun getInstance(context: Context): RecordingRepository {
             return instance ?: synchronized(this) {
-                instance ?: RecordingRepository(context.applicationContext, scope).also { instance = it }
+                instance ?: RecordingRepository(context.applicationContext).also { instance = it }
             }
         }
+
+        /** Escape LIKE wildcards ('%', '_') and the escape char ('\') in user input. */
+        private fun escapeLikeQuery(query: String): String =
+            query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     }
     
     // ==================== Data Access ====================
@@ -95,7 +113,7 @@ class RecordingRepository private constructor(
     /**
      * Search recordings
      */
-    fun searchRecordings(query: String): Flow<List<RecordingEntity>> = recordingDao.searchRecordings(query)
+    fun searchRecordings(query: String): Flow<List<RecordingEntity>> = recordingDao.searchRecordings(escapeLikeQuery(query))
     
     // ==================== Recording Control ====================
     
@@ -103,32 +121,44 @@ class RecordingRepository private constructor(
      * Start recording from phone microphone
      */
     suspend fun startPhoneRecording(): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            if (_recordingState.value is RecordingState.Recording) {
-                return@withContext Result.failure(Exception("Already recording"))
-            }
+        recordingMutex.withLock {
+            try {
+                if (_recordingState.value is RecordingState.Recording) {
+                    return@withContext Result.failure(Exception("Already recording"))
+                }
             
             val recordingId = UUID.randomUUID().toString()
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
             val fileName = "REC_${timestamp}_$recordingId.m4a"
             val outputFile = File(recordingsDir, fileName)
             
-            mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Assign to a local first: if configure/prepare/start throws, the recorder
+            // must still be released (microphone stays held otherwise) and the orphan
+            // zero-byte output file deleted.
+            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 MediaRecorder(context)
             } else {
                 @Suppress("DEPRECATION")
                 MediaRecorder()
-            }.apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioSamplingRate(16000)
-                setAudioChannels(1)
-                setAudioEncodingBitRate(64000)
-                setOutputFile(outputFile.absolutePath)
-                prepare()
-                start()
             }
+            try {
+                recorder.apply {
+                    setAudioSource(MediaRecorder.AudioSource.MIC)
+                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    setAudioSamplingRate(16000)
+                    setAudioChannels(1)
+                    setAudioEncodingBitRate(64000)
+                    setOutputFile(outputFile.absolutePath)
+                    prepare()
+                    start()
+                }
+            } catch (e: Exception) {
+                try { recorder.release() } catch (re: Exception) { Log.w(TAG, "Error releasing failed recorder", re) }
+                outputFile.delete()
+                throw e
+            }
+            mediaRecorder = recorder
             
             currentRecordingFile = outputFile
             currentRecordingId = recordingId
@@ -154,6 +184,7 @@ class RecordingRepository private constructor(
             _recordingState.value = RecordingState.Error(e.message ?: "Failed to start recording")
             Result.failure(e)
         }
+        }
     }
     
     /**
@@ -161,10 +192,11 @@ class RecordingRepository private constructor(
      * Returns recording ID if request was sent successfully
      */
     suspend fun startGlassesRecording(): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            if (_recordingState.value is RecordingState.Recording) {
-                return@withContext Result.failure(Exception("Already recording"))
-            }
+        recordingMutex.withLock {
+            try {
+                if (_recordingState.value is RecordingState.Recording) {
+                    return@withContext Result.failure(Exception("Already recording"))
+                }
             
             val recordingId = UUID.randomUUID().toString()
             currentRecordingId = recordingId
@@ -187,6 +219,7 @@ class RecordingRepository private constructor(
             Log.e(TAG, "Failed to start glasses recording", e)
             _recordingState.value = RecordingState.Error(e.message ?: "Failed to start recording")
             Result.failure(e)
+        }
         }
     }
     
@@ -216,7 +249,8 @@ class RecordingRepository private constructor(
      * Stop current recording
      */
     suspend fun stopRecording(): Result<RecordingEntity?> = withContext(Dispatchers.IO) {
-        try {
+        recordingMutex.withLock {
+            try {
             val state = _recordingState.value
             if (state !is RecordingState.Recording) {
                 return@withContext Result.failure(Exception("Not recording"))
@@ -248,18 +282,29 @@ class RecordingRepository private constructor(
             _recordingState.value = RecordingState.Error(e.message ?: "Failed to stop recording")
             Result.failure(e)
         }
+        }
     }
     
     private fun stopPhoneRecordingInternal(): RecordingEntity? {
-        try {
-            mediaRecorder?.apply {
-                stop()
-                release()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping MediaRecorder", e)
-        }
+        val recorder = mediaRecorder
         mediaRecorder = null
+        try {
+            recorder?.stop()
+        } catch (e: Exception) {
+            // stop() threw (recording too short / invalid state): the file may be
+            // truncated/corrupt — do not report success for it.
+            Log.e(TAG, "Error stopping MediaRecorder", e)
+            currentRecordingFile = null
+            currentRecordingId = null
+            return null
+        } finally {
+            // Always release, even when stop() throws, or the microphone stays held.
+            try {
+                recorder?.release()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error releasing MediaRecorder", e)
+            }
+        }
         
         val file = currentRecordingFile ?: return null
         val id = currentRecordingId ?: return null
@@ -314,12 +359,13 @@ class RecordingRepository private constructor(
             while (true) {
                 kotlinx.coroutines.delay(100)
                 val state = _recordingState.value
-                if (state is RecordingState.Recording) {
-                    val duration = System.currentTimeMillis() - state.startTime
-                    _recordingState.value = state.copy(durationMs = duration)
-                } else {
-                    break
-                }
+                if (state !is RecordingState.Recording) break
+                // CAS against the exact observed instance: if stopRecording() has already
+                // published Stopping/Idle, this fails instead of resurrecting a stale state.
+                _recordingState.compareAndSet(
+                    state,
+                    state.copy(durationMs = System.currentTimeMillis() - state.startTime)
+                )
             }
         }
     }
@@ -361,6 +407,9 @@ class RecordingRepository private constructor(
      * @param audioData PCM audio data from glasses
      * @param transcript The transcription result (optional)
      * @param aiResponse The AI response (optional)
+     * @param recordingId The ID returned by startGlassesRecording(), so the persisted row
+     *        correlates with the ID handed to the caller at start; a new UUID is generated
+     *        when the caller has none.
      * @return The saved RecordingEntity
      */
     suspend fun saveGlassesRecording(
@@ -368,12 +417,13 @@ class RecordingRepository private constructor(
         transcript: String? = null,
         aiResponse: String? = null,
         providerId: String? = null,
-        modelId: String? = null
+        modelId: String? = null,
+        recordingId: String? = null
     ): RecordingEntity? = withContext(Dispatchers.IO) {
         try {
-            val recordingId = UUID.randomUUID().toString()
+            val newRecordingId = recordingId ?: UUID.randomUUID().toString()
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val fileName = "GLASSES_${timestamp}_$recordingId.wav"
+            val fileName = "GLASSES_${timestamp}_$newRecordingId.wav"
             val outputFile = File(recordingsDir, fileName)
             
             // Convert PCM to WAV and save
@@ -382,19 +432,19 @@ class RecordingRepository private constructor(
             
             // Estimate duration based on audio data size
             // PCM 16-bit mono at 16kHz = 2 bytes per sample, 16000 samples per second
-            val durationMs = (audioData.size.toLong() * 1000) / (16000 * 2)
+            val durationMs = (audioData.size.toLong() * 1000) / (GLASSES_SAMPLE_RATE * GLASSES_BYTES_PER_SAMPLE)
             
             val title = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
             
             val recording = RecordingEntity(
-                id = recordingId,
+                id = newRecordingId,
                 title = "Glasses Recording $title",
                 filePath = outputFile.absolutePath,
                 source = RecordingSource.GLASSES,
                 status = RecordingStatus.COMPLETED,
                 durationMs = durationMs,
                 fileSizeBytes = outputFile.length(),
-                sampleRate = 16000,
+                sampleRate = GLASSES_SAMPLE_RATE,
                 channels = 1,
                 transcript = transcript,
                 aiResponse = aiResponse,
@@ -403,7 +453,7 @@ class RecordingRepository private constructor(
             )
             
             recordingDao.insert(recording)
-            Log.d(TAG, "Saved glasses recording: $recordingId, duration: ${durationMs}ms, size: ${audioData.size} bytes")
+            Log.d(TAG, "Saved glasses recording: $newRecordingId, duration: ${durationMs}ms, size: ${audioData.size} bytes")
             
             recording
         } catch (e: Exception) {
@@ -415,7 +465,7 @@ class RecordingRepository private constructor(
     /**
      * Convert PCM audio to WAV format
      */
-    private fun pcmToWav(pcmData: ByteArray, sampleRate: Int = 16000, channels: Int = 1, bitsPerSample: Int = 16): ByteArray {
+    private fun pcmToWav(pcmData: ByteArray, sampleRate: Int = GLASSES_SAMPLE_RATE, channels: Int = 1, bitsPerSample: Int = 16): ByteArray {
         val byteRate = sampleRate * channels * bitsPerSample / 8
         val blockAlign = channels * bitsPerSample / 8
         val dataSize = pcmData.size
@@ -531,6 +581,12 @@ class RecordingRepository private constructor(
             Log.e(TAG, "Error releasing MediaRecorder", e)
         }
         mediaRecorder = null
+        // Reset state: otherwise observers keep seeing a bogus "recording in progress"
+        // and the current-recording fields point at an orphaned partial file.
+        currentRecordingFile = null
+        currentRecordingId = null
+        recordingStartTime = 0
+        _recordingState.value = RecordingState.Idle
     }
 }
 

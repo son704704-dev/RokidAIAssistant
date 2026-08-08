@@ -8,6 +8,7 @@ import android.util.Log
 import com.example.rokidphone.R
 import com.example.rokidphone.service.ai.AiServiceFactory
 import com.example.rokidphone.service.ai.AiServiceProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -47,7 +48,7 @@ class AiRepository private constructor(
             return instance ?: synchronized(this) {
                 instance ?: AiRepository(
                     context.applicationContext,
-                    SettingsRepository.getInstance(context)
+                    SettingsRepository.getInstance(context.applicationContext)
                 ).also { instance = it }
             }
         }
@@ -104,9 +105,12 @@ class AiRepository private constructor(
             val aiService = createAiService()
             val result = aiService.analyzeImage(processedData, prompt)
             
-            Log.d(TAG, "Analysis completed: ${result.take(100)}...")
+            // Log length only; the answer may contain OCR'd personal data
+            Log.d(TAG, "Analysis completed: ${result.length} chars")
             ImageAnalysisResult.Success(result)
-            
+
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Image analysis failed", e)
             ImageAnalysisResult.Error(
@@ -125,8 +129,11 @@ class AiRepository private constructor(
         customPrompt: String? = null
     ): ImageAnalysisResult {
         return try {
-            val imageData = Base64.decode(base64Image, Base64.DEFAULT)
+            // Decoding a full image allocates a large byte array; keep it off the main thread
+            val imageData = withContext(Dispatchers.IO) { Base64.decode(base64Image, Base64.DEFAULT) }
             analyzeImage(imageData, mode, customPrompt)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to decode base64 image", e)
             ImageAnalysisResult.Error(context.getString(R.string.image_decode_failed), e)
@@ -142,8 +149,11 @@ class AiRepository private constructor(
         customPrompt: String? = null
     ): ImageAnalysisResult {
         return try {
-            val imageData = bitmapToBytes(bitmap)
+            // JPEG encoding is expensive; keep it off the main thread
+            val imageData = withContext(Dispatchers.IO) { bitmapToBytes(bitmap) }
             analyzeImage(imageData, mode, customPrompt)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to convert bitmap", e)
             ImageAnalysisResult.Error(context.getString(R.string.image_convert_failed), e)
@@ -201,25 +211,39 @@ class AiRepository private constructor(
             
             val width = options.outWidth
             val height = options.outHeight
-            
+
+            // Bounds decode failed (corrupt/unsupported data yields -1); bail out
+            // instead of silently treating the payload as "small enough"
+            if (width <= 0 || height <= 0) {
+                Log.w(TAG, "Unable to decode image bounds, using original")
+                return imageData
+            }
+
             // If image is already small enough, return directly
             if (width <= MAX_IMAGE_SIZE && height <= MAX_IMAGE_SIZE) {
                 return imageData
             }
-            
-            // Calculate scale ratio
-            val scale = maxOf(width, height).toFloat() / MAX_IMAGE_SIZE
-            
+
+            // Power-of-two sample size guaranteeing max side <= MAX_IMAGE_SIZE after decode
+            // (the decoder rounds inSampleSize down to a power of two anyway)
+            var sampleSize = 1
+            while (maxOf(width, height) / sampleSize > MAX_IMAGE_SIZE) {
+                sampleSize *= 2
+            }
+
             // Decode and scale the image
             val decodeOptions = BitmapFactory.Options().apply {
-                inSampleSize = scale.toInt().coerceAtLeast(1)
+                inSampleSize = sampleSize
             }
             val bitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size, decodeOptions)
                 ?: return imageData
-            
-            // Compress to JPEG
-            val result = bitmapToBytes(bitmap, JPEG_QUALITY)
-            bitmap.recycle()
+
+            // Compress to JPEG, releasing native bitmap memory even on failure
+            val result = try {
+                bitmapToBytes(bitmap, JPEG_QUALITY)
+            } finally {
+                bitmap.recycle()
+            }
             
             Log.d(TAG, "Image preprocessed: ${imageData.size} -> ${result.size} bytes")
             result

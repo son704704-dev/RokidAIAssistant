@@ -429,23 +429,54 @@ object FallbackModelCatalog {
 
     fun find(provider: AiProvider, modelId: String): ModelInfo? =
         modelsFor(provider).find { it.id == modelId }
-            ?: if (provider == AiProvider.GROQ) groqTranscriptionModels.find { it.id == modelId } else null
+
+    /** Transcription-only lookup; kept separate so chat selection never resolves an STT model. */
+    fun findTranscription(modelId: String): ModelInfo? =
+        groqTranscriptionModels.find { it.id == modelId }
 
     /**
      * The default model for a provider: first STABLE entry. A preview or
-     * deprecated model is never the sole default.
+     * deprecated model is never the sole default when a stable entry exists.
+     * Never crashes on an (accidentally) empty catalog — returns "" instead.
      */
     fun defaultModelFor(provider: AiProvider): String =
-        modelsFor(provider).firstOrNull { it.isSelectableDefault }?.id
-            ?: modelsFor(provider).first().id
+        modelsFor(provider).let { list ->
+            list.firstOrNull { it.isSelectableDefault }?.id
+                ?: list.firstOrNull { it.status != ModelStatus.DEPRECATED }?.id
+                ?: list.firstOrNull()?.id
+                ?: ""
+        }
 
-    /** Map of every fallback entry keyed by provider → id, for capability resolution. */
+    /** Every fallback entry indexed by (provider, id) for O(1) capability resolution. */
+    private val index: Map<AiProvider, Map<String, ModelInfo>> by lazy {
+        AiProvider.entries.associateWith { p -> modelsFor(p).associateBy { it.id } }
+    }
+
     fun capabilityFor(provider: AiProvider, modelId: String): ModelCapabilities? =
-        find(provider, modelId)?.capabilities
+        index[provider]?.get(modelId)?.capabilities
 
-    /** Legacy model ID → replacement, applied to stored settings on migration. */
-    val legacyModelMigration: Map<String, String> = mapOf(
-        "deepseek-chat" to "deepseek-v4-flash",
-        "deepseek-reasoner" to "deepseek-v4-pro"
+    /** Legacy model ID → replacement per provider, applied to stored settings on migration. */
+    val legacyModelMigration: Map<AiProvider, Map<String, String>> = mapOf(
+        AiProvider.DEEPSEEK to mapOf(
+            "deepseek-chat" to "deepseek-v4-flash",
+            "deepseek-reasoner" to "deepseek-v4-pro"
+        )
     )
+
+    init {
+        // Catalog integrity: provider consistency + unique IDs per provider.
+        // Declared last so all lists above are initialized before this runs.
+        AiProvider.entries.forEach { provider ->
+            val models = modelsFor(provider)
+            require(models.all { it.provider == provider }) {
+                "FallbackModelCatalog: provider mismatch in list for $provider"
+            }
+            require(models.distinctBy { it.id }.size == models.size) {
+                "FallbackModelCatalog: duplicate model IDs for $provider"
+            }
+        }
+        require(groqTranscriptionModels.all { it.provider == AiProvider.GROQ }) {
+            "FallbackModelCatalog: provider mismatch in groqTranscriptionModels"
+        }
+    }
 }
