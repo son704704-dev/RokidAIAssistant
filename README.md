@@ -166,6 +166,28 @@ Notes:
 - Do not commit `sn_auth_file.*` into version control.
 - Build will fail fast if multiple `sn_auth_file.*` files exist.
 
+### GitHub APK CI and Releases
+
+The [`Android APK CI`](.github/workflows/android-apk.yml) workflow runs tests,
+lint, and debug APK builds for pull requests and pushes to `main`. Debug APKs
+are retained as workflow artifacts for 14 days.
+
+Configure these repository secrets before building a signed release:
+
+- `RELEASE_KEYSTORE_BASE64`
+- `RELEASE_STORE_PASSWORD`
+- `RELEASE_KEY_ALIAS`
+- `RELEASE_KEY_PASSWORD`
+- `SN_AUTH_FILE_BASE64`
+- `ROKID_CLIENT_SECRET`
+
+To publish a release, update all application `versionName` values and
+[`RELEASE_NOTES.md`](RELEASE_NOTES.md), merge the change to `main`, and push a
+matching tag such as `v1.1.0`. CI verifies the version/tag match, builds and
+verifies the three signed APKs, generates `SHA256SUMS.txt`, and creates the
+GitHub Release automatically. A manual workflow run can build the signed
+release artifacts without publishing a GitHub Release.
+
 **Keys in `local.properties` (all optional at build time):**
 
 ```properties

@@ -14,15 +14,15 @@ if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
 
-// Release signing credentials: local.properties first (local dev), then env vars (CI, e.g. GitHub Actions)
-fun releaseSigningProp(propKey: String, envKey: String): String? =
-    localProperties.getProperty(propKey)?.takeIf { it.isNotBlank() }
-        ?: System.getenv(envKey)?.takeIf { it.isNotBlank() }
+// CI environment variables override local.properties; local development still uses the file.
+fun localOrEnvironment(name: String): String? =
+    System.getenv(name)?.takeIf { it.isNotBlank() }
+        ?: localProperties.getProperty(name)?.takeIf { it.isNotBlank() }
 
-val releaseStoreFile = releaseSigningProp("RELEASE_STORE_FILE", "RELEASE_STORE_FILE")
-val releaseStorePassword = releaseSigningProp("RELEASE_STORE_PASSWORD", "RELEASE_STORE_PASSWORD")
-val releaseKeyAlias = releaseSigningProp("RELEASE_KEY_ALIAS", "RELEASE_KEY_ALIAS")
-val releaseKeyPassword = releaseSigningProp("RELEASE_KEY_PASSWORD", "RELEASE_KEY_PASSWORD")
+val releaseStoreFile = localOrEnvironment("RELEASE_STORE_FILE")
+val releaseStorePassword = localOrEnvironment("RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = localOrEnvironment("RELEASE_KEY_ALIAS")
+val releaseKeyPassword = localOrEnvironment("RELEASE_KEY_PASSWORD")
 val hasReleaseSigningConfig = !releaseStoreFile.isNullOrBlank() &&
     !releaseStorePassword.isNullOrBlank() &&
     !releaseKeyAlias.isNullOrBlank() &&
@@ -36,17 +36,17 @@ android {
         applicationId = "com.example.rokidaiassistant"
         minSdk = 28
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
         buildConfigField("String", "ROKID_CLIENT_SECRET", 
-            "\"${localProperties.getProperty("ROKID_CLIENT_SECRET", "")}\"")
+            "\"${localOrEnvironment("ROKID_CLIENT_SECRET").orEmpty()}\"")
         buildConfigField("String", "GEMINI_API_KEY", 
-            "\"${localProperties.getProperty("GEMINI_API_KEY", "")}\"")
+            "\"${localOrEnvironment("GEMINI_API_KEY").orEmpty()}\"")
         buildConfigField("String", "OPENAI_API_KEY", 
-            "\"${localProperties.getProperty("OPENAI_API_KEY", "")}\"")
+            "\"${localOrEnvironment("OPENAI_API_KEY").orEmpty()}\"")
     }
 
     signingConfigs {

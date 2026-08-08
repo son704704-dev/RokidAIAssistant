@@ -160,6 +160,27 @@ cp local.properties.template local.properties
 - 不要把 `sn_auth_file.*` 提交到版本控制。
 - 若同時存在多個 `sn_auth_file.*`，建置會快速失敗。
 
+### GitHub APK CI 與新版發佈
+
+[`Android APK CI`](../../.github/workflows/android-apk.yml) workflow 會在 pull
+request 與推送至 `main` 時執行測試、lint 及 debug APK 建置，並將 debug APK
+保留為 14 天的 workflow artifact。
+
+建立已簽署的 release 前，請在 GitHub repository 設定下列 Secrets：
+
+- `RELEASE_KEYSTORE_BASE64`
+- `RELEASE_STORE_PASSWORD`
+- `RELEASE_KEY_ALIAS`
+- `RELEASE_KEY_PASSWORD`
+- `SN_AUTH_FILE_BASE64`
+- `ROKID_CLIENT_SECRET`
+
+發佈新版時，請同步更新所有應用程式的 `versionName` 與
+[`RELEASE_NOTES.md`](../../RELEASE_NOTES.md)，合併至 `main` 後推送相符的標籤，
+例如 `v1.1.0`。CI 會檢查版本與標籤是否一致、建立並驗證三個已簽署 APK、
+產生 `SHA256SUMS.txt`，最後自動建立 GitHub Release。手動執行 workflow 時也能
+建立已簽署的 release artifact，但不會發布 GitHub Release。
+
 **`local.properties` 中的必要金鑰：**
 
 ```properties
