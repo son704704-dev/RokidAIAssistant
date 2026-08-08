@@ -14,15 +14,15 @@ if (localPropertiesFile.exists()) {
     localProperties.load(localPropertiesFile.inputStream())
 }
 
-// CI environment variables override local.properties; local development still uses the file.
-fun localOrEnvironment(name: String): String? =
-    System.getenv(name)?.takeIf { it.isNotBlank() }
-        ?: localProperties.getProperty(name)?.takeIf { it.isNotBlank() }
+// Release signing credentials: local.properties first, then environment variables.
+fun releaseSigningProp(propKey: String, envKey: String): String? =
+    localProperties.getProperty(propKey)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(envKey)?.takeIf { it.isNotBlank() }
 
-val releaseStoreFile = localOrEnvironment("RELEASE_STORE_FILE")
-val releaseStorePassword = localOrEnvironment("RELEASE_STORE_PASSWORD")
-val releaseKeyAlias = localOrEnvironment("RELEASE_KEY_ALIAS")
-val releaseKeyPassword = localOrEnvironment("RELEASE_KEY_PASSWORD")
+val releaseStoreFile = releaseSigningProp("RELEASE_STORE_FILE", "RELEASE_STORE_FILE")
+val releaseStorePassword = releaseSigningProp("RELEASE_STORE_PASSWORD", "RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningProp("RELEASE_KEY_ALIAS", "RELEASE_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningProp("RELEASE_KEY_PASSWORD", "RELEASE_KEY_PASSWORD")
 val hasReleaseSigningConfig = !releaseStoreFile.isNullOrBlank() &&
     !releaseStorePassword.isNullOrBlank() &&
     !releaseKeyAlias.isNullOrBlank() &&
@@ -42,11 +42,11 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
         buildConfigField("String", "ROKID_CLIENT_SECRET", 
-            "\"${localOrEnvironment("ROKID_CLIENT_SECRET").orEmpty()}\"")
+            "\"${localProperties.getProperty("ROKID_CLIENT_SECRET", "")}\"")
         buildConfigField("String", "GEMINI_API_KEY", 
-            "\"${localOrEnvironment("GEMINI_API_KEY").orEmpty()}\"")
+            "\"${localProperties.getProperty("GEMINI_API_KEY", "")}\"")
         buildConfigField("String", "OPENAI_API_KEY", 
-            "\"${localOrEnvironment("OPENAI_API_KEY").orEmpty()}\"")
+            "\"${localProperties.getProperty("OPENAI_API_KEY", "")}\"")
     }
 
     signingConfigs {

@@ -22,14 +22,12 @@ android {
             localPropsFile.inputStream().use { load(it) }
         }
     }
-    fun localOrEnvironment(name: String): String? =
-        System.getenv(name)?.takeIf { it.isNotBlank() }
-            ?: localProps.getProperty(name)?.takeIf { it.isNotBlank() }
+    fun localProperty(name: String): String? = localProps.getProperty(name)?.takeIf { it.isNotBlank() }
 
-    val releaseStoreFile = localOrEnvironment("RELEASE_STORE_FILE")
-    val releaseStorePassword = localOrEnvironment("RELEASE_STORE_PASSWORD")
-    val releaseKeyAlias = localOrEnvironment("RELEASE_KEY_ALIAS")
-    val releaseKeyPassword = localOrEnvironment("RELEASE_KEY_PASSWORD")
+    val releaseStoreFile = localProperty("RELEASE_STORE_FILE")
+    val releaseStorePassword = localProperty("RELEASE_STORE_PASSWORD")
+    val releaseKeyAlias = localProperty("RELEASE_KEY_ALIAS")
+    val releaseKeyPassword = localProperty("RELEASE_KEY_PASSWORD")
     val hasReleaseSigning = listOf(
         releaseStoreFile,
         releaseStorePassword,
@@ -47,8 +45,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // API Keys - Read from local.properties, do not hardcode.
-        val geminiKey = localOrEnvironment("GEMINI_API_KEY").orEmpty()
-        val openaiKey = localOrEnvironment("OPENAI_API_KEY").orEmpty()
+        val geminiKey = localProps.getProperty("GEMINI_API_KEY", "")
+        val openaiKey = localProps.getProperty("OPENAI_API_KEY", "")
         buildConfigField("String", "GEMINI_API_KEY", "\"$geminiKey\"")
         buildConfigField("String", "OPENAI_API_KEY", "\"$openaiKey\"")
     }

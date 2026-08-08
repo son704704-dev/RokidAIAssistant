@@ -133,7 +133,7 @@ RokidAIAssistant/
 ### Prerequisites
 
 - **Android Studio**: Ladybug (2024.2) or later
-- **JDK**: 21 (recommended for AGP 9 and CI)
+- **JDK**: 21 (recommended for AGP 9)
 - **Android SDK**: API 36 installed
 
 ### Environment Setup
@@ -143,50 +143,16 @@ RokidAIAssistant/
 cp local.properties.template local.properties
 ```
 
-### CI: Inject a Single `sn_auth_file.*` Resource
+### Configure a Single `sn_auth_file.*` Resource
 
 The app enforces a single-source SN auth strategy in `app/src/main/res/raw/`.
-Keep exactly one file named `sn_auth_file.*` (for example: `sn_auth_file.lc`).
-
-```yaml
-- name: Prepare SN auth resource (single source)
-   shell: bash
-   run: |
-      mkdir -p app/src/main/res/raw
-      rm -f app/src/main/res/raw/sn_auth_file.*
-      echo "${{ secrets.SN_AUTH_FILE_BASE64 }}" | base64 --decode > app/src/main/res/raw/sn_auth_file.lc
-
-- name: Build app module
-   run: ./gradlew :app:assembleDebug --no-daemon
-```
+Place exactly one local file named `sn_auth_file.*` there (for example:
+`sn_auth_file.lc`).
 
 Notes:
 
-- Store the SN file as base64 in `SN_AUTH_FILE_BASE64` (GitHub Secret).
 - Do not commit `sn_auth_file.*` into version control.
 - Build will fail fast if multiple `sn_auth_file.*` files exist.
-
-### GitHub APK CI and Releases
-
-The [`Android APK CI`](.github/workflows/android-apk.yml) workflow runs tests,
-lint, and debug APK builds for pull requests and pushes to `main`. Debug APKs
-are retained as workflow artifacts for 14 days.
-
-Configure these repository secrets before building a signed release:
-
-- `RELEASE_KEYSTORE_BASE64`
-- `RELEASE_STORE_PASSWORD`
-- `RELEASE_KEY_ALIAS`
-- `RELEASE_KEY_PASSWORD`
-- `SN_AUTH_FILE_BASE64`
-- `ROKID_CLIENT_SECRET`
-
-To publish a release, update all application `versionName` values and
-[`RELEASE_NOTES.md`](RELEASE_NOTES.md), merge the change to `main`, and push a
-matching tag such as `v1.1.0`. CI verifies the version/tag match, builds and
-verifies the three signed APKs, generates `SHA256SUMS.txt`, and creates the
-GitHub Release automatically. A manual workflow run can build the signed
-release artifacts without publishing a GitHub Release.
 
 **Keys in `local.properties` (all optional at build time):**
 

@@ -17,14 +17,12 @@ android {
             localPropsFile.inputStream().use { load(it) }
         }
     }
-    fun localOrEnvironment(name: String): String? =
-        System.getenv(name)?.takeIf { it.isNotBlank() }
-            ?: localProps.getProperty(name)?.takeIf { it.isNotBlank() }
+    fun localProperty(name: String): String? = localProps.getProperty(name)?.takeIf { it.isNotBlank() }
 
-    val releaseStoreFile = localOrEnvironment("RELEASE_STORE_FILE")
-    val releaseStorePassword = localOrEnvironment("RELEASE_STORE_PASSWORD")
-    val releaseKeyAlias = localOrEnvironment("RELEASE_KEY_ALIAS")
-    val releaseKeyPassword = localOrEnvironment("RELEASE_KEY_PASSWORD")
+    val releaseStoreFile = localProperty("RELEASE_STORE_FILE")
+    val releaseStorePassword = localProperty("RELEASE_STORE_PASSWORD")
+    val releaseKeyAlias = localProperty("RELEASE_KEY_ALIAS")
+    val releaseKeyPassword = localProperty("RELEASE_KEY_PASSWORD")
     val hasReleaseSigning = listOf(
         releaseStoreFile,
         releaseStorePassword,
@@ -43,11 +41,11 @@ android {
 
         // API Keys - Read from local.properties, do not hardcode
         // Rokid SDK Configuration
-        buildConfigField("String", "ROKID_CLIENT_SECRET", "\"${localOrEnvironment("ROKID_CLIENT_SECRET").orEmpty()}\"")
+        buildConfigField("String", "ROKID_CLIENT_SECRET", "\"${localProps.getProperty("ROKID_CLIENT_SECRET", "")}\"")
 
         // API Keys
-        buildConfigField("String", "GEMINI_API_KEY", "\"${localOrEnvironment("GEMINI_API_KEY").orEmpty()}\"")
-        buildConfigField("String", "OPENAI_API_KEY", "\"${localOrEnvironment("OPENAI_API_KEY").orEmpty()}\"")
+        buildConfigField("String", "GEMINI_API_KEY", "\"${localProps.getProperty("GEMINI_API_KEY", "")}\"")
+        buildConfigField("String", "OPENAI_API_KEY", "\"${localProps.getProperty("OPENAI_API_KEY", "")}\"")
     }
 
     signingConfigs {

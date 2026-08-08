@@ -127,7 +127,7 @@ RokidAIAssistant/
 ### 前置需求
 
 - **Android Studio**: Ladybug (2024.2) 或更新版本
-- **JDK**: 21（建議，與 AGP 9 / CI 一致）
+- **JDK**: 21（建議，與 AGP 9 一致）
 - **Android SDK**: 已安裝 API 36
 
 ### 環境設定
@@ -137,49 +137,15 @@ RokidAIAssistant/
 cp local.properties.template local.properties
 ```
 
-### CI：注入唯一的 `sn_auth_file.*` 資源檔
+### 設定唯一的 `sn_auth_file.*` 資源檔
 
-`app/src/main/res/raw/` 採用 SN 檔單一來源策略。
-請確保只存在一個 `sn_auth_file.*`（例如：`sn_auth_file.lc`）。
-
-```yaml
-- name: 準備 SN 驗證資源（單一來源）
-   shell: bash
-   run: |
-      mkdir -p app/src/main/res/raw
-      rm -f app/src/main/res/raw/sn_auth_file.*
-      echo "${{ secrets.SN_AUTH_FILE_BASE64 }}" | base64 --decode > app/src/main/res/raw/sn_auth_file.lc
-
-- name: 建置 app 模組
-   run: ./gradlew :app:assembleDebug --no-daemon
-```
+`app/src/main/res/raw/` 採用 SN 檔單一來源策略。請在該目錄放置且只保留一個
+本機 `sn_auth_file.*`（例如：`sn_auth_file.lc`）。
 
 說明：
 
-- 將 SN 檔內容先轉成 base64，存入 `SN_AUTH_FILE_BASE64`（GitHub Secret）。
 - 不要把 `sn_auth_file.*` 提交到版本控制。
 - 若同時存在多個 `sn_auth_file.*`，建置會快速失敗。
-
-### GitHub APK CI 與新版發佈
-
-[`Android APK CI`](../../.github/workflows/android-apk.yml) workflow 會在 pull
-request 與推送至 `main` 時執行測試、lint 及 debug APK 建置，並將 debug APK
-保留為 14 天的 workflow artifact。
-
-建立已簽署的 release 前，請在 GitHub repository 設定下列 Secrets：
-
-- `RELEASE_KEYSTORE_BASE64`
-- `RELEASE_STORE_PASSWORD`
-- `RELEASE_KEY_ALIAS`
-- `RELEASE_KEY_PASSWORD`
-- `SN_AUTH_FILE_BASE64`
-- `ROKID_CLIENT_SECRET`
-
-發佈新版時，請同步更新所有應用程式的 `versionName` 與
-[`RELEASE_NOTES.md`](../../RELEASE_NOTES.md)，合併至 `main` 後推送相符的標籤，
-例如 `v1.1.0`。CI 會檢查版本與標籤是否一致、建立並驗證三個已簽署 APK、
-產生 `SHA256SUMS.txt`，最後自動建立 GitHub Release。手動執行 workflow 時也能
-建立已簽署的 release artifact，但不會發布 GitHub Release。
 
 **`local.properties` 中的必要金鑰：**
 

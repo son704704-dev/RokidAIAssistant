@@ -11,7 +11,7 @@ Release date: 2026-08-08
 - Improved cancellation, timeout, resource cleanup, and error handling across AI, STT, TTS, and streaming services.
 - Protected credentials and logs, added safe log-file access, and preserved user data with an explicit Room database migration.
 - Improved provider/model compatibility, encoded-audio transcription, localized errors, and documentation language fallback.
-- Added reproducible GitHub Actions APK builds, signed tag releases, signature verification, and SHA-256 checksums.
+- Published three signed APK variants with signature verification and SHA-256 checksums.
 
 ### Validation
 
@@ -35,7 +35,7 @@ Release date: 2026-08-08
 - 改善 AI、STT、TTS 與串流服務的取消、逾時、資源釋放及錯誤處理。
 - 加強憑證與日誌保護、安全的日誌檔案存取，並透過明確的 Room 資料庫遷移保留使用者資料。
 - 改善服務商／模型相容性、編碼音訊轉錄、在地化錯誤訊息，以及文件語言備援行為。
-- 新增可重現的 GitHub Actions APK 建置、標籤觸發的簽署發佈、APK 簽章驗證與 SHA-256 校驗碼。
+- 發布三個已簽署 APK 版本，並提供 APK 簽章驗證與 SHA-256 校驗碼。
 
 ### 驗證結果
 
