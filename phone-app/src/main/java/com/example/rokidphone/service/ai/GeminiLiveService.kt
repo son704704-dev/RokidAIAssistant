@@ -76,8 +76,10 @@ class GeminiLiveService(
 
     // ========== WebSocket Instance ==========
 
+    @Volatile
     private var webSocket: WebSocket? = null
     private val isConnected = AtomicBoolean(false)
+    private val connectionLock = Any()
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -181,29 +183,34 @@ class GeminiLiveService(
      * @param tools Optional list of tool (function) declarations
      */
     fun connect(tools: List<JSONObject>? = null) {
-        if (isConnected.get()) {
-            Log.w(TAG, "Already connected, skipping duplicate connection")
-            return
+        synchronized(connectionLock) {
+            if (_connectionState.value in setOf(
+                    ConnectionState.CONNECTING,
+                    ConnectionState.SETTING_UP,
+                    ConnectionState.READY
+                )
+            ) {
+                Log.w(TAG, "Connection already in progress, skipping duplicate connection")
+                return
+            }
+
+            if (apiKey.isBlank()) {
+                Log.e(TAG, "API Key is not configured")
+                _errorMessage.value = "API Key is not configured"
+                _connectionState.value = ConnectionState.ERROR
+                onConnectionStateChanged?.invoke(ConnectionState.ERROR)
+                return
+            }
+
+            Log.d(TAG, "Connecting to Gemini Live API...")
+            _connectionState.value = ConnectionState.CONNECTING
+            onConnectionStateChanged?.invoke(ConnectionState.CONNECTING)
+
+            val request = Request.Builder()
+                .url("$WEBSOCKET_BASE_URL?key=$apiKey")
+                .build()
+            webSocket = client.newWebSocket(request, createWebSocketListener(tools))
         }
-
-        if (apiKey.isBlank()) {
-            Log.e(TAG, "API Key is not configured")
-            _errorMessage.value = "API Key is not configured"
-            _connectionState.value = ConnectionState.ERROR
-            onConnectionStateChanged?.invoke(ConnectionState.ERROR)
-            return
-        }
-
-        Log.d(TAG, "Connecting to Gemini Live API...")
-        _connectionState.value = ConnectionState.CONNECTING
-        onConnectionStateChanged?.invoke(ConnectionState.CONNECTING)
-
-        val url = "$WEBSOCKET_BASE_URL?key=$apiKey"
-        val request = Request.Builder()
-            .url(url)
-            .build()
-
-        webSocket = client.newWebSocket(request, createWebSocketListener(tools))
     }
 
     /**
@@ -211,11 +218,14 @@ class GeminiLiveService(
      */
     fun disconnect() {
         Log.d(TAG, "Disconnecting WebSocket")
-        isConnected.set(false)
-        webSocket?.close(1000, "Client disconnect")
-        webSocket = null
-        _connectionState.value = ConnectionState.DISCONNECTED
-        onConnectionStateChanged?.invoke(ConnectionState.DISCONNECTED)
+        synchronized(connectionLock) {
+            isConnected.set(false)
+            val socket = webSocket
+            webSocket = null
+            socket?.close(1000, "Client disconnect")
+            _connectionState.value = ConnectionState.DISCONNECTED
+            onConnectionStateChanged?.invoke(ConnectionState.DISCONNECTED)
+        }
     }
 
     /**
@@ -249,10 +259,10 @@ class GeminiLiveService(
         val base64Audio = Base64.encodeToString(pcmData, Base64.NO_WRAP)
 
         val message = JSONObject().apply {
-            put("realtime_input", JSONObject().apply {
-                put("media_chunks", JSONArray().apply {
+            put("realtimeInput", JSONObject().apply {
+                put("mediaChunks", JSONArray().apply {
                     put(JSONObject().apply {
-                        put("mime_type", "audio/pcm;rate=$INPUT_SAMPLE_RATE")
+                        put("mimeType", "audio/pcm;rate=$INPUT_SAMPLE_RATE")
                         put("data", base64Audio)
                     })
                 })
@@ -276,10 +286,10 @@ class GeminiLiveService(
         val base64Image = Base64.encodeToString(jpegData, Base64.NO_WRAP)
 
         val message = JSONObject().apply {
-            put("realtime_input", JSONObject().apply {
-                put("media_chunks", JSONArray().apply {
+            put("realtimeInput", JSONObject().apply {
+                put("mediaChunks", JSONArray().apply {
                     put(JSONObject().apply {
-                        put("mime_type", "image/jpeg")
+                        put("mimeType", "image/jpeg")
                         put("data", base64Image)
                     })
                 })
@@ -302,8 +312,8 @@ class GeminiLiveService(
         }
 
         val message = JSONObject().apply {
-            put("tool_response", JSONObject().apply {
-                put("function_responses", JSONArray().apply {
+            put("toolResponse", JSONObject().apply {
+                put("functionResponses", JSONArray().apply {
                     put(JSONObject().apply {
                         put("id", toolCallId)
                         put("response", result)
@@ -326,8 +336,8 @@ class GeminiLiveService(
         }
 
         val message = JSONObject().apply {
-            put("client_content", JSONObject().apply {
-                put("turn_complete", true)
+            put("clientContent", JSONObject().apply {
+                put("turnComplete", true)
             })
         }
 
@@ -355,6 +365,10 @@ class GeminiLiveService(
         return object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (this@GeminiLiveService.webSocket !== webSocket) {
+                    webSocket.cancel()
+                    return
+                }
                 Log.d(TAG, "WebSocket connected")
                 isConnected.set(true)
                 _connectionState.value = ConnectionState.SETTING_UP
@@ -365,6 +379,7 @@ class GeminiLiveService(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (this@GeminiLiveService.webSocket !== webSocket) return
                 handleServerMessage(text)
             }
 
@@ -373,14 +388,18 @@ class GeminiLiveService(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (this@GeminiLiveService.webSocket !== webSocket) return
                 Log.d(TAG, "WebSocket closed: $code - $reason")
+                this@GeminiLiveService.webSocket = null
                 isConnected.set(false)
                 _connectionState.value = ConnectionState.DISCONNECTED
                 onConnectionStateChanged?.invoke(ConnectionState.DISCONNECTED)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (this@GeminiLiveService.webSocket !== webSocket) return
                 Log.e(TAG, "WebSocket connection failed", t)
+                this@GeminiLiveService.webSocket = null
                 isConnected.set(false)
                 _errorMessage.value = t.message ?: "Connection failed"
                 _connectionState.value = ConnectionState.ERROR
@@ -400,17 +419,17 @@ class GeminiLiveService(
                 put("model", "models/$modelId")
 
                 // Generation configuration
-                put("generation_config", JSONObject().apply {
+                put("generationConfig", JSONObject().apply {
                     // Response modality: audio
-                    put("response_modalities", JSONArray().apply {
+                    put("responseModalities", JSONArray().apply {
                         put("AUDIO")
                     })
 
                     // Voice configuration
-                    put("speech_config", JSONObject().apply {
-                        put("voice_config", JSONObject().apply {
-                            put("prebuilt_voice_config", JSONObject().apply {
-                                put("voice_name", "Aoede")  // Default voice
+                    put("speechConfig", JSONObject().apply {
+                        put("voiceConfig", JSONObject().apply {
+                            put("prebuiltVoiceConfig", JSONObject().apply {
+                                put("voiceName", "Aoede")  // Default voice
                             })
                         })
                     })
@@ -418,7 +437,7 @@ class GeminiLiveService(
 
                 // System instruction
                 if (systemPrompt.isNotBlank()) {
-                    put("system_instruction", JSONObject().apply {
+                    put("systemInstruction", JSONObject().apply {
                         put("parts", JSONArray().apply {
                             put(JSONObject().apply {
                                 put("text", systemPrompt)
@@ -428,22 +447,22 @@ class GeminiLiveService(
                 }
 
                 // Real-time input configuration (VAD settings)
-                put("realtime_input_config", JSONObject().apply {
+                put("realtimeInputConfig", JSONObject().apply {
                     // Automatic voice activity detection
-                    put("automatic_activity_detection", JSONObject().apply {
+                    put("automaticActivityDetection", JSONObject().apply {
                         put("disabled", false)
-                        put("start_of_speech_sensitivity", startSensitivity.name)
-                        put("end_of_speech_sensitivity", endSensitivity.name)
-                        put("prefix_padding_ms", 300)
-                        put("silence_duration_ms", silenceDurationMs)
+                        put("startOfSpeechSensitivity", startSensitivity.name)
+                        put("endOfSpeechSensitivity", endSensitivity.name)
+                        put("prefixPaddingMs", 300)
+                        put("silenceDurationMs", silenceDurationMs)
                     })
 
                     // Activity handling (interrupt policy)
-                    put("activity_handling", activityHandling.name)
+                    put("activityHandling", activityHandling.name)
 
                     // Enable input/output audio transcription
-                    put("input_audio_transcription", JSONObject())
-                    put("output_audio_transcription", JSONObject())
+                    put("inputAudioTranscription", JSONObject())
+                    put("outputAudioTranscription", JSONObject())
                 })
 
                 // Tool declarations
@@ -513,13 +532,13 @@ class GeminiLiveService(
         }
 
         // Check if the model turn is complete
-        if (content.optBoolean("turn_complete", false)) {
+        if (content.optBoolean("turnComplete", content.optBoolean("turn_complete", false))) {
             Log.d(TAG, "Turn complete")
             onTurnComplete?.invoke()
         }
 
         // Process model turn content (audio & text parts)
-        val modelTurn = content.optJSONObject("model_turn")
+        val modelTurn = content.optJSONObject("modelTurn") ?: content.optJSONObject("model_turn")
         if (modelTurn != null) {
             val parts = modelTurn.optJSONArray("parts")
             if (parts != null) {
@@ -527,9 +546,9 @@ class GeminiLiveService(
                     val part = parts.getJSONObject(i)
 
                     // Handle audio data
-                    val inlineData = part.optJSONObject("inline_data")
+                    val inlineData = part.optJSONObject("inlineData") ?: part.optJSONObject("inline_data")
                     if (inlineData != null) {
-                        val mimeType = inlineData.optString("mime_type", "")
+                        val mimeType = inlineData.optString("mimeType", inlineData.optString("mime_type", ""))
                         val data = inlineData.optString("data", "")
 
                         if (mimeType.startsWith("audio/") && data.isNotEmpty()) {
@@ -549,7 +568,8 @@ class GeminiLiveService(
         }
 
         // Handle input (user speech) transcription
-        val inputTranscription = content.optJSONObject("input_transcription")
+        val inputTranscription = content.optJSONObject("inputTranscription")
+            ?: content.optJSONObject("input_transcription")
         if (inputTranscription != null) {
             val text = inputTranscription.optString("text", "")
             if (text.isNotEmpty()) {
@@ -559,7 +579,8 @@ class GeminiLiveService(
         }
 
         // Handle output (AI speech) transcription
-        val outputTranscription = content.optJSONObject("output_transcription")
+        val outputTranscription = content.optJSONObject("outputTranscription")
+            ?: content.optJSONObject("output_transcription")
         if (outputTranscription != null) {
             val text = outputTranscription.optString("text", "")
             if (text.isNotEmpty()) {
@@ -573,7 +594,9 @@ class GeminiLiveService(
      * Handle a tool call message from the model.
      */
     private fun handleToolCallMessage(toolCallJson: JSONObject) {
-        val functionCalls = toolCallJson.optJSONArray("function_calls") ?: return
+        val functionCalls = toolCallJson.optJSONArray("functionCalls")
+            ?: toolCallJson.optJSONArray("function_calls")
+            ?: return
 
         val toolCalls = mutableListOf<ToolCall>()
         for (i in 0 until functionCalls.length()) {

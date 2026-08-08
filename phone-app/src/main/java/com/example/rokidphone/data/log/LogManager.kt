@@ -35,7 +35,6 @@ class LogManager private constructor(private val context: Context) {
         private const val DEFAULT_MAX_ENTRIES = 5000
         private const val LOG_FILE_PREFIX = "rokid_logs_"
         private const val LOG_DIR_NAME = "logs"
-
         // Clock-skew tolerance for logcat timestamps, which carry no year
         private const val FUTURE_LOG_TOLERANCE_MS = 60_000L
 
@@ -51,6 +50,8 @@ class LogManager private constructor(private val context: Context) {
             override fun initialValue(): SimpleDateFormat =
                 SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
         }
+        private const val MAX_EXPORTED_LOG_READ_BYTES = 2L * 1024L * 1024L
+        private val SAFE_FILE_NAME = Regex("[A-Za-z0-9._-]{1,80}")
 
         @Volatile
         private var instance: LogManager? = null
@@ -278,8 +279,10 @@ class LogManager private constructor(private val context: Context) {
     ): File? = withContext(Dispatchers.IO) {
         try {
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            // Sanitize caller-supplied names to prevent path traversal outside logDir
-            val name = (fileName ?: "${LOG_FILE_PREFIX}$timestamp").replace(Regex("[^A-Za-z0-9_.-]"), "_")
+            val name = fileName
+                ?.trim()
+                ?.takeIf { SAFE_FILE_NAME.matches(it) }
+                ?: "${LOG_FILE_PREFIX}$timestamp"
             val file = File(logDir, "$name.txt")
             
             val logsToExport = getFilteredLogs(filter)
@@ -337,7 +340,12 @@ class LogManager private constructor(private val context: Context) {
      */
     suspend fun readExportedLogFile(file: File): String = withContext(Dispatchers.IO) {
         try {
-            file.readText()
+            val safeFile = resolveExportedLogFile(file)
+                ?: throw SecurityException("File is outside the exported log directory")
+            require(safeFile.length() <= MAX_EXPORTED_LOG_READ_BYTES) {
+                "Log file exceeds the ${MAX_EXPORTED_LOG_READ_BYTES / 1024 / 1024} MiB read limit"
+            }
+            safeFile.readText()
         } catch (e: Exception) {
             Log.e(TAG, "Error reading log file: ${file.name}", e)
             "Error reading file: ${e.message}"
@@ -422,7 +430,8 @@ class LogManager private constructor(private val context: Context) {
      */
     fun deleteExportedLogFile(file: File): Boolean {
         return try {
-            val deleted = file.delete()
+            val safeFile = resolveExportedLogFile(file) ?: return false
+            val deleted = safeFile.delete()
             if (deleted) {
                 Log.i(TAG, "Deleted log file: ${file.name}")
             }
@@ -430,6 +439,14 @@ class LogManager private constructor(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error deleting log file: ${file.name}", e)
             false
+        }
+    }
+
+    private fun resolveExportedLogFile(file: File): File? {
+        val root = logDir.canonicalFile
+        val candidate = file.canonicalFile
+        return candidate.takeIf {
+            it.parentFile == root && it.isFile && it.name.endsWith(".txt", ignoreCase = true)
         }
     }
     

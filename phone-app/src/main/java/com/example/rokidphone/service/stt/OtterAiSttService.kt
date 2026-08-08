@@ -157,7 +157,7 @@ class OtterAiSttService(
                 if (response.isSuccessful) {
                     val responseBody = response.body?.string() ?: ""
                     val json = JSONObject(responseBody)
-                    json.optString("speech_id", null)
+                    json.optString("speech_id").takeIf { it.isNotBlank() }
                 } else {
                     Log.e(TAG, "Upload failed: ${response.code} - ${response.message}")
                     null
@@ -195,7 +195,7 @@ class OtterAiSttService(
                                 // Extract transcript
                                 val transcript = json.optString("transcript", "")
                                 if (transcript.isNotEmpty()) {
-                                    Log.d(TAG, "Transcription completed: $transcript")
+                                    Log.d(TAG, "Otter.ai transcription completed (${transcript.length} characters)")
                                     return transcript
                                 }
                             }
@@ -250,7 +250,7 @@ class OtterAiSttService(
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     val json = JSONObject(response.body?.string() ?: "")
-                    json.optString("access_token", null)
+                    json.optString("access_token").takeIf { it.isNotBlank() }
                 } else {
                     Log.e(TAG, "Failed to get access token: ${response.code}")
                     null

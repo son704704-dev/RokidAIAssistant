@@ -38,6 +38,8 @@ class CxrApi private constructor() {
     private var aiEventListener: AiEventListener? = null
     private var audioStreamListener: AudioStreamListener? = null
     private var bluetoothCallback: BluetoothStatusCallback? = null
+    private val connectHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pendingConnectRunnable: Runnable? = null
     
     /**
      * Initialize Bluetooth connection
@@ -102,9 +104,11 @@ class CxrApi private constructor() {
         Log.d(TAG, "[MOCK] connectBluetooth: $address, uuid=$uuid, snBytes=${snBytes.size} bytes")
         bluetoothCallback = callback
         // Mock connection success (500ms delay to simulate real connection process)
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            callback.onConnected()
-        }, 500)
+        pendingConnectRunnable?.let(connectHandler::removeCallbacks)
+        pendingConnectRunnable = Runnable {
+            pendingConnectRunnable = null
+            bluetoothCallback?.onConnected()
+        }.also { connectHandler.postDelayed(it, 500) }
     }
     
     /**
@@ -112,6 +116,8 @@ class CxrApi private constructor() {
      */
     fun deinitBluetooth() {
         Log.d(TAG, "[MOCK] deinitBluetooth")
+        pendingConnectRunnable?.let(connectHandler::removeCallbacks)
+        pendingConnectRunnable = null
         bluetoothCallback?.onDisconnected()
         bluetoothCallback = null
     }

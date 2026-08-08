@@ -25,13 +25,13 @@ import com.example.rokidglasses.service.BluetoothSppClient
 import com.example.rokidglasses.service.photo.GlassesCameraManager
 import com.example.rokidglasses.service.photo.ImageCompressor
 import com.example.rokidglasses.service.photo.PhotoTransferProtocol
-import com.example.rokidglasses.service.photo.createPhotoTransferProtocol
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 data class GlassesUiState(
     val isConnected: Boolean = false,
@@ -78,6 +78,7 @@ class GlassesViewModel(
         // Max characters per page for glasses display
         private const val MAX_CHARS_PER_PAGE = 120
         private const val MAX_LINES_PER_PAGE = 4
+        private const val MAX_AUDIO_BUFFER_BYTES = 4 * 1024 * 1024
     }
     
     private val _uiState = MutableStateFlow(GlassesUiState(
@@ -267,7 +268,7 @@ class GlassesViewModel(
         if (_uiState.value.isListening) return
         
         // Clear audio buffer and reset pagination
-        audioBuffer.reset()
+        synchronized(audioBuffer) { audioBuffer.reset() }
         resetPagination()
         
         _uiState.update { it.copy(
@@ -301,6 +302,7 @@ class GlassesViewModel(
         
         // Start recording
         recordingJob = viewModelScope.launch(Dispatchers.IO) {
+            var localRecorder: AudioRecord? = null
             try {
                 val bufferSize = AudioRecord.getMinBufferSize(
                     Constants.AUDIO_SAMPLE_RATE,
@@ -324,16 +326,18 @@ class GlassesViewModel(
                     return@launch
                 }
                 
-                audioRecord = AudioRecord(
+                val recorder = AudioRecord(
                     MediaRecorder.AudioSource.MIC,
                     Constants.AUDIO_SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
                     bufferSize
                 )
+                localRecorder = recorder
+                audioRecord = recorder
                 
                 // Verify AudioRecord was initialized successfully
-                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                if (recorder.state != AudioRecord.STATE_INITIALIZED) {
                     Log.e(TAG, "AudioRecord initialization failed")
                     withContext(Dispatchers.Main) {
                         _uiState.update { it.copy(
@@ -341,22 +345,23 @@ class GlassesViewModel(
                             isListening = false
                         ) }
                     }
-                    audioRecord?.release()
-                    audioRecord = null
                     return@launch
                 }
                 
-                audioRecord?.startRecording()
+                recorder.startRecording()
                 Log.d(TAG, "AudioRecord started recording")
                 
                 val buffer = ByteArray(Constants.AUDIO_BUFFER_SIZE)
                 
                 while (isActive && _uiState.value.isListening) {
-                    val readSize = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                    val readSize = recorder.read(buffer, 0, buffer.size)
                     if (readSize > 0) {
-                        // Collect audio data to buffer
                         synchronized(audioBuffer) {
-                            audioBuffer.write(buffer, 0, readSize)
+                            if (audioBuffer.size() <= MAX_AUDIO_BUFFER_BYTES - readSize) {
+                                audioBuffer.write(buffer, 0, readSize)
+                            } else {
+                                throw IOException("Recording exceeded the maximum duration")
+                            }
                         }
                     }
                 }
@@ -371,21 +376,30 @@ class GlassesViewModel(
                         isListening = false
                     ) }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Recording failed", e)
+                withContext(Dispatchers.Main) {
+                    _uiState.update { it.copy(
+                        displayText = context.getString(R.string.error_prefix, e.message ?: ""),
+                        isListening = false
+                    ) }
+                }
             } finally {
-                // Safely stop and release AudioRecord
+                if (audioRecord === localRecorder) audioRecord = null
                 try {
-                    if (audioRecord?.recordingState == android.media.AudioRecord.RECORDSTATE_RECORDING) {
-                        audioRecord?.stop()
+                    if (localRecorder?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                        localRecorder?.stop()
                     }
                 } catch (e: IllegalStateException) {
                     Log.w(TAG, "AudioRecord stop failed (already stopped or invalid state)", e)
                 }
                 try {
-                    audioRecord?.release()
+                    localRecorder?.release()
                 } catch (e: Exception) {
                     Log.w(TAG, "AudioRecord release failed", e)
                 }
-                audioRecord = null
             }
         }
     }
@@ -398,18 +412,20 @@ class GlassesViewModel(
             hintText = context.getString(R.string.please_wait)
         ) }
         
-        recordingJob?.cancel()
-        recordingJob = null
-        
         Log.d(TAG, "Stop recording, sending audio to phone")
         
         // Send audio via Bluetooth to phone for processing
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                val activeRecording = recordingJob
+                recordingJob = null
+                activeRecording?.cancelAndJoin()
+
                 // Get recording data
                 val audioData: ByteArray
                 synchronized(audioBuffer) {
                     audioData = audioBuffer.toByteArray()
+                    audioBuffer.reset()
                 }
                 
                 Log.d(TAG, "Audio data size: ${audioData.size} bytes")
@@ -455,6 +471,8 @@ class GlassesViewModel(
                 
                 // Phone will update UI via handlePhoneMessage callback when done
                 
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending audio", e)
                 withContext(Dispatchers.Main) {
@@ -805,9 +823,11 @@ class GlassesViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        recordingJob?.cancel()
+        recordingJob?.let { job ->
+            runBlocking { job.cancelAndJoin() }
+        }
+        recordingJob = null
         videoStreamingJob?.cancel()
-        audioRecord?.release()
         bluetoothClient.disconnect()
         cameraManager?.release()
         cxrServiceManager?.release()
@@ -951,12 +971,7 @@ class GlassesViewModel(
                     photoTransferProgress = 0f
                 ) }
                 
-                val socket = bluetoothClient.connectedSocket
-                if (socket == null || !socket.isConnected) {
-                    throw IllegalStateException("Bluetooth socket not connected")
-                }
-                
-                photoTransferProtocol = socket.createPhotoTransferProtocol { current, total ->
+                photoTransferProtocol = bluetoothClient.createPhotoTransferProtocol { current, total ->
                     val progress = current.toFloat() / total
                     _uiState.update { it.copy(photoTransferProgress = progress) }
                 }

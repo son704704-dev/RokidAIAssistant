@@ -47,10 +47,10 @@ class MainActivity : ComponentActivity() {
     
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.values.all { it }
-        if (allGranted) {
-            startWakeWordService()
+    ) {
+        // Notification permission is optional; core camera/audio/Bluetooth permissions are not.
+        if (hasRequiredServicePermissions()) {
+            startServices()
         }
     }
     
@@ -177,7 +177,7 @@ class MainActivity : ComponentActivity() {
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                 // Only handle short tap (not long press which was already handled)
-                if (event?.eventTime?.minus(event.downTime) ?: 0 < 500) {
+                if ((event?.eventTime?.minus(event.downTime) ?: 0L) < 500L) {
                     // Short tap - toggle recording
                     if (uiState.isPaginated && uiState.currentPage == uiState.totalPages - 1) {
                         viewModel.dismissPagination()
@@ -216,6 +216,9 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.BLUETOOTH_SCAN
             ))
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         
         val notGranted = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -227,6 +230,17 @@ class MainActivity : ComponentActivity() {
         } else {
             Log.d(TAG, "All permissions granted")
             startServices()
+        }
+    }
+
+    private fun hasRequiredServicePermissions(): Boolean {
+        val required = mutableListOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            required += Manifest.permission.BLUETOOTH_CONNECT
+            required += Manifest.permission.BLUETOOTH_SCAN
+        }
+        return required.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
     }
     

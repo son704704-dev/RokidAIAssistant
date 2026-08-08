@@ -624,7 +624,8 @@ private fun RecordingControlCard(
     onPauseRecording: () -> Unit,
     onStopRecording: () -> Unit
 ) {
-    val isRecording = recordingState is RecordingState.Recording
+    val isRecording = recordingState is RecordingState.Recording ||
+        recordingState is RecordingState.Paused
     val isStopping = recordingState is RecordingState.Stopping
     
     Card(
@@ -680,9 +681,19 @@ private fun RecordingControlCard(
                         fontWeight = FontWeight.SemiBold
                     )
                     
-                    if (isRecording && recordingState is RecordingState.Recording) {
-                        val durationText = formatRecordingDuration(recordingState.durationMs)
-                        val sourceText = when (recordingState.source) {
+                    if (isRecording) {
+                        val durationMs = when (recordingState) {
+                            is RecordingState.Recording -> recordingState.durationMs
+                            is RecordingState.Paused -> recordingState.durationMs
+                            else -> 0
+                        }
+                        val source = when (recordingState) {
+                            is RecordingState.Recording -> recordingState.source
+                            is RecordingState.Paused -> recordingState.source
+                            else -> RecordingSource.PHONE
+                        }
+                        val durationText = formatRecordingDuration(durationMs)
+                        val sourceText = when (source) {
                             RecordingSource.PHONE -> stringResource(R.string.recording_source_phone)
                             RecordingSource.GLASSES -> stringResource(R.string.recording_source_glasses)
                         }

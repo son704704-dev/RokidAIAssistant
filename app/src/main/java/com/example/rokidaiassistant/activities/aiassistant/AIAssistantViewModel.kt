@@ -12,6 +12,7 @@ import com.example.rokidaiassistant.sdk.CxrApi
 import com.example.rokidaiassistant.sdk.AiEventListener
 import com.example.rokidaiassistant.sdk.AudioStreamListener
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,6 +56,7 @@ class AIAssistantViewModel(application: Application) : AndroidViewModel(applicat
     
     companion object {
         private const val TAG = "AIAssistantVM"
+        private const val MAX_AUDIO_BUFFER_BYTES = 16000 * 2 * 120
     }
     
     private val _uiState = MutableStateFlow(AIAssistantUiState())
@@ -66,6 +68,7 @@ class AIAssistantViewModel(application: Application) : AndroidViewModel(applicat
     private val ttsService = TextToSpeechService(application.applicationContext)
     
     private val audioBuffer = ByteArrayOutputStream()
+    private val audioBufferLock = Any()
     private var heartbeatJob: Job? = null
     
     // ========================================
@@ -94,8 +97,19 @@ class AIAssistantViewModel(application: Application) : AndroidViewModel(applicat
     private val audioStreamListener = object : AudioStreamListener {
         override fun onAudioData(data: ByteArray?, length: Int) {
             if (data != null && _uiState.value.isListening) {
-                audioBuffer.write(data, 0, length)
-                Log.v(TAG, "Received audio data: $length bytes, total: ${audioBuffer.size()} bytes")
+                val safeLength = length.coerceIn(0, data.size)
+                val totalSize = synchronized(audioBufferLock) {
+                    val writable = (MAX_AUDIO_BUFFER_BYTES - audioBuffer.size())
+                        .coerceAtLeast(0)
+                        .coerceAtMost(safeLength)
+                    if (writable > 0) audioBuffer.write(data, 0, writable)
+                    audioBuffer.size()
+                }
+                if (safeLength > 0 && totalSize >= MAX_AUDIO_BUFFER_BYTES) {
+                    Log.w(TAG, "Audio buffer limit reached; additional audio is discarded")
+                } else {
+                    Log.v(TAG, "Received audio data: $safeLength bytes, total: $totalSize bytes")
+                }
             }
         }
     }
@@ -134,7 +148,7 @@ class AIAssistantViewModel(application: Application) : AndroidViewModel(applicat
      * Start listening
      */
     private fun startListening() {
-        audioBuffer.reset()
+        synchronized(audioBufferLock) { audioBuffer.reset() }
         _uiState.value = _uiState.value.copy(
             isListening = true,
             isProcessing = false,
@@ -163,7 +177,7 @@ class AIAssistantViewModel(application: Application) : AndroidViewModel(applicat
      */
     private suspend fun processAudioAndRespond() {
         try {
-            val audioData = audioBuffer.toByteArray()
+            val audioData = synchronized(audioBufferLock) { audioBuffer.toByteArray() }
             Log.d(TAG, "Processing audio data: ${audioData.size} bytes")
             
             // Use Whisper STT for speech recognition
@@ -237,6 +251,8 @@ class AIAssistantViewModel(application: Application) : AndroidViewModel(applicat
                 )
             }
             
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Processing failed", e)
             _uiState.value = _uiState.value.copy(

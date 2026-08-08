@@ -6,6 +6,9 @@ import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -32,15 +35,18 @@ class GeminiService {
         )
     }
     
+    private val chatMutex = Mutex()
+
     // Initialize conversation history with system prompt
-    private val chat by lazy {
+    private fun createChatSession() =
         model.startChat(
             history = listOf(
                 content(role = "user") { text("Please remember the following settings: ${Constants.SYSTEM_PROMPT}") },
                 content(role = "model") { text("OK, I have remembered these settings. I am Xiao Luo, an AI assistant running on Rokid smart glasses. I will respond concisely in Traditional Chinese with a friendly, conversational tone. How can I help you?") }
             )
         )
-    }
+
+    private var chatSession = createChatSession()
     
     /**
      * Send message and get response
@@ -52,7 +58,7 @@ class GeminiService {
         try {
             Log.d(TAG, "Sending message to Gemini: $userMessage")
             
-            val response = chat.sendMessage(userMessage)
+            val response = chatMutex.withLock { chatSession.sendMessage(userMessage) }
             val text = response.text
             
             if (text.isNullOrBlank()) {
@@ -63,6 +69,8 @@ class GeminiService {
                 Result.success(text.trim())
             }
             
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Gemini API call failed", e)
             Result.failure(e)
@@ -80,6 +88,8 @@ class GeminiService {
             val response = model.generateContent(prompt)
             val text = response.text ?: "Sorry, I cannot answer this question."
             Result.success(text.trim())
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "generateContent failed", e)
             Result.failure(e)
@@ -89,9 +99,10 @@ class GeminiService {
     /**
      * Reset conversation (clear context)
      */
-    fun resetConversation() {
-        // Note: GenerativeModel.startChat() creates a new ChatSession
-        // If reset is needed, the entire service instance may need to be recreated
+    suspend fun resetConversation() {
+        chatMutex.withLock {
+            chatSession = createChatSession()
+        }
         Log.d(TAG, "Conversation has been reset")
     }
 }

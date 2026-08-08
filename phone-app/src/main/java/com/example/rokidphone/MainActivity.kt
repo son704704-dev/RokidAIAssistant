@@ -56,7 +56,7 @@ class MainActivity : AppCompatActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.values.all { it }
+        val allGranted = permissions.isNotEmpty() && permissions.values.all { it }
         if (allGranted) {
             startAIService()
         } else {
@@ -97,6 +97,8 @@ class MainActivity : AppCompatActivity() {
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE
             ))
+        } else {
+            requiredPermissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
         
         requiredPermissions.add(Manifest.permission.RECORD_AUDIO)

@@ -150,7 +150,8 @@ class SpeechToTextService {
             }
             
             val request = Request.Builder()
-                .url("$GOOGLE_STT_URL?key=$apiKey")
+                .url(GOOGLE_STT_URL)
+                .header("X-Goog-Api-Key", apiKey)
                 .header("Content-Type", "application/json")
                 .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
                 .build()

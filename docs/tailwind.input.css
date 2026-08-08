@@ -1,0 +1,7 @@
+/*
+ * Generate the production stylesheet with:
+ * pnpm dlx tailwindcss@3.4.17 -i docs/tailwind.input.css -o docs/tailwind.css --content docs/index.html --minify
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

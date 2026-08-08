@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.*
 import okio.ByteString
@@ -13,6 +14,7 @@ import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.coroutineContext
 
 /**
  * Microsoft Edge TTS Client (phone-app copy).
@@ -90,7 +92,6 @@ class EdgeTtsClient(
         var webSocket: WebSocket? = null
         try {
             Log.d(TAG, "Starting speech synthesis: voice=$voice, text=${text.take(50)}...")
-
             val requestId = generateRequestId()
             val wsUrl = "$WSS_URL?TrustedClientToken=${getTrustedToken()}&ConnectionId=$requestId"
 
@@ -105,9 +106,13 @@ class EdgeTtsClient(
                 createWebSocketListener(requestId, text, voice, rate, pitch, volume, audioData, latch, errorRef, turnEndSeen)
             )
 
-            if (!latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                webSocket?.cancel()
-                return@withContext Result.failure(Exception("Speech synthesis timeout"))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS)
+            while (!latch.await(100, TimeUnit.MILLISECONDS)) {
+                coroutineContext.ensureActive()
+                if (System.nanoTime() >= deadline) {
+                    webSocket?.cancel()
+                    return@withContext Result.failure(Exception("Speech synthesis timeout"))
+                }
             }
 
             errorRef[0]?.let {
@@ -125,6 +130,7 @@ class EdgeTtsClient(
 
             Result.success(result)
         } catch (e: CancellationException) {
+            webSocket?.cancel()
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Speech synthesis failed", e)

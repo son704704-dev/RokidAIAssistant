@@ -24,6 +24,7 @@ import java.util.*
  * Conversation ViewModel
  * Manages conversation history and current conversation state
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ConversationViewModel(application: Application) : AndroidViewModel(application) {
     
     companion object {

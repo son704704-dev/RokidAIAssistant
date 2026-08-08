@@ -1,7 +1,8 @@
 package com.example.rokidphone.data.db
 
 import androidx.room.*
-import com.example.rokidphone.BuildConfig
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -32,19 +33,22 @@ abstract class AppDatabase : RoomDatabase() {
         
         fun getInstance(context: android.content.Context): AppDatabase {
             return instance ?: synchronized(this) {
-                instance ?: run {
-                    val builder = androidx.room.Room.databaseBuilder(
-                        context.applicationContext,
-                        AppDatabase::class.java,
-                        DATABASE_NAME
-                    )
-                    if (BuildConfig.DEBUG) {
-                        // Debug-only safety net. Release builds MUST ship explicit
-                        // migrations; destructive fallback silently wipes all user data.
-                        builder.fallbackToDestructiveMigration(dropAllTables = true)
-                    }
-                    builder.build().also { instance = it }
-                }
+                instance ?: androidx.room.Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    DATABASE_NAME
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .build()
+                    .also { instance = it }
+            }
+        }
+
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `recordings` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `file_path` TEXT NOT NULL, `source` TEXT NOT NULL, `status` TEXT NOT NULL, `duration_ms` INTEGER NOT NULL, `file_size_bytes` INTEGER NOT NULL, `sample_rate` INTEGER NOT NULL, `channels` INTEGER NOT NULL, `transcript` TEXT, `ai_response` TEXT, `provider_id` TEXT, `model_id` TEXT, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `transcribed_at` INTEGER, `analyzed_at` INTEGER, `error_message` TEXT, `is_favorite` INTEGER NOT NULL, `notes` TEXT, PRIMARY KEY(`id`))"""
+                )
             }
         }
     }
@@ -196,7 +200,7 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations WHERE title LIKE '%' || :query || '%' ESCAPE '\' ORDER BY updated_at DESC")
     fun searchConversations(query: String): Flow<List<ConversationEntity>>
     
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertConversation(conversation: ConversationEntity)
     
     @Update
@@ -274,10 +278,10 @@ interface MessageDao {
     suspend fun deleteMessage(message: MessageEntity)
     
     @Query("DELETE FROM messages WHERE id = :id")
-    suspend fun deleteMessageById(id: String)
+    suspend fun deleteMessageById(id: String): Int
     
     @Query("DELETE FROM messages WHERE conversation_id = :conversationId")
-    suspend fun deleteMessagesForConversation(conversationId: String)
+    suspend fun deleteMessagesForConversation(conversationId: String): Int
     
     @Query("SELECT COUNT(*) FROM messages WHERE conversation_id = :conversationId")
     suspend fun getMessageCount(conversationId: String): Int

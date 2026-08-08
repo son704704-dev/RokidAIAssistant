@@ -528,4 +528,5 @@
     <string name="recordings_status_analyzing">分析中</string>
     <string name="recordings_status_analyzed">已分析</string>
     <string name="recordings_status_error">錯誤</string>
+    <string name="api_key_not_configured">API 金鑰尚未設定。請在設定中設定 API 金鑰。</string>
 </resources>

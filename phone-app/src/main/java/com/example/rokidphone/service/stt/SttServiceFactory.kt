@@ -22,7 +22,10 @@ object SttServiceFactory {
         sttCredentials: SttCredentials,
         apiSettings: ApiSettings
     ): SttService? {
-        val provider = sttCredentials.getSelectedProvider()
+        val provider = sttCredentials.getSelectedProvider() ?: run {
+            Log.e(TAG, "Unknown STT provider: ${sttCredentials.selectedProvider}")
+            return null
+        }
         
         Log.d(TAG, "Creating STT service for provider: $provider")
         
@@ -198,21 +201,8 @@ object SttServiceFactory {
             }
             
             SttProvider.HUAWEI_SIS -> {
-                if (sttCredentials.huaweiAk.isBlank() || 
-                    sttCredentials.huaweiSk.isBlank() ||
-                    sttCredentials.huaweiProjectId.isBlank()) {
-                    Log.w(TAG, "Huawei SIS credentials not configured")
-                    null
-                } else {
-                    HuaweiSisSttService(
-                        accessKey = sttCredentials.huaweiAk,
-                        secretKey = sttCredentials.huaweiSk,
-                        region = sttCredentials.huaweiRegion,
-                        projectId = sttCredentials.huaweiProjectId,
-                        audioFormat = "pcm16k16bit",
-                        property = "chinese_16k_common"
-                    )
-                }
+                Log.e(TAG, "Huawei SIS is disabled until documented SigV4 authentication is implemented")
+                null
             }
             
             SttProvider.VOLCENGINE -> {
@@ -292,7 +282,6 @@ object SttServiceFactory {
         SttProvider.BAIDU_ASR,
         // Tier 2 providers
         SttProvider.IBM_WATSON,
-        SttProvider.HUAWEI_SIS,
         // Tier 3 providers
         SttProvider.VOLCENGINE,
         SttProvider.REV_AI,
@@ -304,7 +293,7 @@ object SttServiceFactory {
      * Get providers that are planned but not yet implemented
      */
     fun getPlannedProviders(): List<SttProvider> = listOf(
-        // All providers are now implemented!
+        SttProvider.HUAWEI_SIS
     )
 }
 

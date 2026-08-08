@@ -529,4 +529,5 @@
     <string name="recordings_status_analyzing">Аналізується</string>
     <string name="recordings_status_analyzed">Проаналізовано</string>
     <string name="recordings_status_error">Помилка</string>
+    <string name="api_key_not_configured">Ключ API не налаштовано. Налаштуйте ключ API в налаштуваннях.</string>
 </resources>

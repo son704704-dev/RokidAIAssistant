@@ -2,6 +2,7 @@ package com.example.rokidphone.service.stt
 
 import android.util.Log
 import com.example.rokidphone.service.SpeechResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -14,6 +15,11 @@ import java.util.concurrent.TimeUnit
  * Provides common utilities for audio processing and HTTP calls
  */
 abstract class BaseSttService : SttService {
+
+    protected class NonRetryableSttException(
+        val statusCode: Int,
+        message: String
+    ) : Exception(message)
     
     companion object {
         private const val TAG = "BaseSttService"
@@ -89,6 +95,13 @@ abstract class BaseSttService : SttService {
                     if (result != null) {
                         return@withContext result
                     }
+                    if (attempt < maxRetries - 1) {
+                        kotlinx.coroutines.delay(RETRY_DELAY_MS * (attempt + 1))
+                    }
+                } catch (e: NonRetryableSttException) {
+                    throw e
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w(tag, "Attempt ${attempt + 1} failed: ${e.message}")
                     lastException = e

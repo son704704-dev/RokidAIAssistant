@@ -50,6 +50,12 @@ class GoogleCloudSttService(
                         errorCode = SpeechErrorCode.AUDIO_TOO_SHORT
                     )
                 }
+                if (useServiceAccount) {
+                    return@withContext SpeechResult.Error(
+                        message = "Service-account OAuth is not supported by this build; use a Google Cloud API key",
+                        errorCode = SpeechErrorCode.TRANSCRIPTION_ERROR
+                    )
+                }
                 
                 Log.d(TAG, "Transcribing ${audioData.size} bytes, language: $languageCode")
                 
@@ -70,23 +76,13 @@ class GoogleCloudSttService(
                 }
                 
                 // Build request URL
-                val url = if (useServiceAccount) {
-                    "$baseUrl/speech:recognize"
-                } else {
-                    "$baseUrl/speech:recognize?key=$apiKey"
-                }
+                val url = "$baseUrl/speech:recognize"
                 
                 val request = Request.Builder()
                     .url(url)
                     .addHeader("Content-Type", "application/json")
                     .addHeader("X-Goog-User-Project", projectId)  // Required for quota/billing attribution
-                    .apply {
-                        if (useServiceAccount) {
-                            // TODO: Implement OAuth2 token from service account JSON
-                            // For now, this requires additional library support
-                            Log.w(TAG, "Service account auth not fully implemented, using API key")
-                        }
-                    }
+                    .addHeader("X-Goog-Api-Key", apiKey)
                     .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
                     .build()
                 
@@ -148,7 +144,10 @@ class GoogleCloudSttService(
         return try {
             // Try a simple API call with minimal audio
             val testAudio = ByteArray(3200) // 0.2 seconds of silence
-            val result = transcribe(testAudio)
+            if (useServiceAccount || serviceAccountJson.isNotBlank()) {
+                return SttValidationResult.Invalid(SttValidationError.INVALID_CREDENTIALS)
+            }
+            val result = transcribe(testAudio, "zh-CN")
             
             when (result) {
                 is SpeechResult.Success -> SttValidationResult.Valid

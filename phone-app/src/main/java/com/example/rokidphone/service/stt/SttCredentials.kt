@@ -87,15 +87,13 @@ data class SttCredentials(
     /**
      * Get the currently selected provider
      */
-    fun getSelectedProvider(): SttProvider {
-        return SttProvider.fromName(selectedProvider) ?: SttProvider.GEMINI
-    }
+    fun getSelectedProvider(): SttProvider? = SttProvider.fromNameOrNull(selectedProvider)
     
     /**
      * Check if credentials are configured for the selected provider
      */
     fun hasCredentialsForSelectedProvider(): Boolean {
-        return hasCredentialsForProvider(getSelectedProvider())
+        return getSelectedProvider()?.let(::hasCredentialsForProvider) ?: false
     }
     
     /**

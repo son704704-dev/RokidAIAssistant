@@ -3,7 +3,6 @@ package com.example.rokidphone.ui.components
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -13,7 +12,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -28,49 +26,54 @@ fun StatusChip(
     status: ConnectionStatus,
     modifier: Modifier = Modifier
 ) {
-    val (backgroundColor, contentColor, icon, text) = when (status) {
-        ConnectionStatus.CONNECTED -> listOf(
-            ExtendedTheme.colors.successContainer,
-            ExtendedTheme.colors.onSuccessContainer,
-            Icons.Default.BluetoothConnected,
-            "Connected"
+    val visuals = when (status) {
+        ConnectionStatus.CONNECTED -> StatusVisuals(
+            backgroundColor = ExtendedTheme.colors.successContainer,
+            contentColor = ExtendedTheme.colors.onSuccessContainer,
+            icon = Icons.Default.BluetoothConnected,
+            text = "Connected"
         )
-        ConnectionStatus.CONNECTING -> listOf(
-            MaterialTheme.colorScheme.tertiaryContainer,
-            MaterialTheme.colorScheme.onTertiaryContainer,
-            Icons.AutoMirrored.Filled.BluetoothSearching,
-            "Connecting..."
+        ConnectionStatus.CONNECTING -> StatusVisuals(
+            backgroundColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+            icon = Icons.AutoMirrored.Filled.BluetoothSearching,
+            text = "Connecting..."
         )
-        ConnectionStatus.DISCONNECTED -> listOf(
-            MaterialTheme.colorScheme.surfaceVariant,
-            MaterialTheme.colorScheme.onSurfaceVariant,
-            Icons.Default.BluetoothDisabled,
-            "Disconnected"
+        ConnectionStatus.DISCONNECTED -> StatusVisuals(
+            backgroundColor = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            icon = Icons.Default.BluetoothDisabled,
+            text = "Disconnected"
         )
-        ConnectionStatus.ERROR -> listOf(
-            MaterialTheme.colorScheme.errorContainer,
-            MaterialTheme.colorScheme.onErrorContainer,
-            Icons.Default.Error,
-            "Error"
+        ConnectionStatus.ERROR -> StatusVisuals(
+            backgroundColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            icon = Icons.Default.Error,
+            text = "Error"
         )
     }
     
     // Pulsing animation for connecting state
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val alpha by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = if (status == ConnectionStatus.CONNECTING) 0.6f else 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "alpha"
-    )
+    val alpha = if (status == ConnectionStatus.CONNECTING) {
+        val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+        val animatedAlpha by infiniteTransition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.6f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1000),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "alpha"
+        )
+        animatedAlpha
+    } else {
+        1f
+    }
     
     Surface(
         modifier = modifier,
         shape = MaterialTheme.shapes.small,
-        color = (backgroundColor as Color).copy(alpha = alpha)
+        color = visuals.backgroundColor.copy(alpha = alpha)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -78,19 +81,26 @@ fun StatusChip(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Icon(
-                imageVector = icon as ImageVector,
+                imageVector = visuals.icon,
                 contentDescription = null,
-                tint = contentColor as Color,
+                tint = visuals.contentColor,
                 modifier = Modifier.size(16.dp)
             )
             Text(
-                text = text as String,
+                text = visuals.text,
                 style = MaterialTheme.typography.labelMedium,
-                color = contentColor
+                color = visuals.contentColor
             )
         }
     }
 }
+
+private data class StatusVisuals(
+    val backgroundColor: Color,
+    val contentColor: Color,
+    val icon: ImageVector,
+    val text: String
+)
 
 enum class ConnectionStatus {
     CONNECTED, CONNECTING, DISCONNECTED, ERROR

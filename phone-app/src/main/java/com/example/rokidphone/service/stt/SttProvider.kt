@@ -8,7 +8,7 @@ import com.example.rokidphone.R
  * Defines dedicated STT providers separate from AI chat providers
  */
 enum class SttProvider(
-    @StringRes val displayNameResId: Int,
+    @param:StringRes val displayNameResId: Int,
     val description: String,
     val website: String,
     val authType: SttAuthType,
@@ -164,9 +164,11 @@ enum class SttProvider(
     );
     
     companion object {
-        fun fromName(name: String): SttProvider {
-            return entries.find { it.name == name } ?: GEMINI
-        }
+        fun fromNameOrNull(name: String): SttProvider? =
+            entries.find { it.name.equals(name, ignoreCase = true) }
+
+        fun fromName(name: String): SttProvider =
+            requireNotNull(fromNameOrNull(name)) { "Unknown STT provider: $name" }
         
         /**
          * Get providers that use simple API key auth

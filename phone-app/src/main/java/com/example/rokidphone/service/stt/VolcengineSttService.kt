@@ -63,7 +63,7 @@ class VolcengineSttService(
                 
                 // Build WebSocket URL
                 val wsUrl = buildWebSocketUrl(token)
-                Log.d(TAG, "WebSocket URL: $wsUrl")
+                Log.d(TAG, "WebSocket URL: ${wsUrl.substringBefore('?')}")
 
                 val result = suspendCancellableCoroutine { continuation ->
                     val latch = CountDownLatch(1)
@@ -166,6 +166,8 @@ class VolcengineSttService(
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error parsing message", e)
                                 error = e
+                                webSocket.close(1000, "Parse error")
+                                latch.countDown()
                             }
                         }
 

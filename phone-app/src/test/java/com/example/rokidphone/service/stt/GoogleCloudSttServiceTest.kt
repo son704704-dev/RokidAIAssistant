@@ -55,7 +55,7 @@ class GoogleCloudSttServiceTest {
     }
 
     @Test
-    fun `transcribe - request uses API key in query parameter`() = runTest {
+    fun `transcribe - request uses API key header`() = runTest {
         val service = createService(apiKey = "gcp-test-key-789")
         mockServer.server.enqueue(
             jsonResponse(TestFixtures.MockResponses.googleCloudSttSuccess("test"))
@@ -64,7 +64,8 @@ class GoogleCloudSttServiceTest {
         service.transcribe(TestFixtures.createTestPcmAudio(), "en-US")
 
         val request = mockServer.server.takeRequest()
-        assertThat(request.path).contains("key=gcp-test-key-789")
+        assertThat(request.path).doesNotContain("key=gcp-test-key-789")
+        assertThat(request.headers["X-Goog-Api-Key"]).isEqualTo("gcp-test-key-789")
     }
 
     @Test

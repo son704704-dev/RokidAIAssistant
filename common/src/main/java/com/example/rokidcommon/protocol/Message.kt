@@ -67,7 +67,7 @@ data class Message(
                 
                 val type = MessageType.fromCode(typeCode) ?: return null
                 
-                val binaryPayload = if (payloadLength > 0 && bytes.size >= 8 + payloadLength) {
+                val binaryPayload = if (payloadLength > 0 && payloadLength <= bytes.size - 8) {
                     ByteArray(payloadLength).also { buffer.get(it) }
                 } else null
                 

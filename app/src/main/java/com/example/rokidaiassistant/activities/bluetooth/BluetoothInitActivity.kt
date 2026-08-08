@@ -1,11 +1,16 @@
 package com.example.rokidaiassistant.activities.bluetooth
 
 import android.annotation.SuppressLint
+import android.Manifest
 import android.bluetooth.BluetoothDevice
+import android.content.pm.PackageManager
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,18 +25,35 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import com.example.rokidaiassistant.activities.aiassistant.AIAssistantActivity
 import com.example.rokidaiassistant.ui.theme.RokidAIAssistantTheme
 
 class BluetoothInitActivity : ComponentActivity() {
-    
+
+    private val bluetoothViewModel: BluetoothInitViewModel by viewModels()
+    private var pendingPermissionAction: (() -> Unit)? = null
+    private var bluetoothPermissionsGranted by mutableStateOf(false)
+
+    private val bluetoothPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        bluetoothPermissionsGranted = hasRequiredBluetoothPermissions()
+        val pendingAction = pendingPermissionAction
+        pendingPermissionAction = null
+        if (bluetoothPermissionsGranted) {
+            pendingAction?.invoke()
+        } else {
+            bluetoothViewModel.onPermissionDenied()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        bluetoothPermissionsGranted = hasRequiredBluetoothPermissions()
         setContent {
             RokidAIAssistantTheme {
-                val viewModel: BluetoothInitViewModel = viewModel()
-                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                val uiState by bluetoothViewModel.uiState.collectAsStateWithLifecycle()
                 
                 // Listen for connection success
                 LaunchedEffect(uiState.isConnected) {
@@ -42,9 +64,22 @@ class BluetoothInitActivity : ComponentActivity() {
                 
                 BluetoothInitScreen(
                     uiState = uiState,
-                    onStartScan = { viewModel.startScan(this) },
-                    onStopScan = { viewModel.stopScan(this) },
-                    onDeviceClick = { device -> viewModel.connectToDevice(this, device) },
+                    canAccessDeviceDetails = bluetoothPermissionsGranted,
+                    onStartScan = {
+                        runWithBluetoothPermissions {
+                            bluetoothViewModel.startScan(applicationContext)
+                        }
+                    },
+                    onStopScan = {
+                        runWithBluetoothPermissions {
+                            bluetoothViewModel.stopScan(applicationContext)
+                        }
+                    },
+                    onDeviceClick = { device ->
+                        runWithBluetoothPermissions {
+                            bluetoothViewModel.connectToDevice(applicationContext, device)
+                        }
+                    },
                     onBackClick = { finish() }
                 )
             }
@@ -55,6 +90,35 @@ class BluetoothInitActivity : ComponentActivity() {
         startActivity(Intent(this, AIAssistantActivity::class.java))
         finish()
     }
+
+    private fun runWithBluetoothPermissions(action: () -> Unit) {
+        if (hasRequiredBluetoothPermissions()) {
+            bluetoothPermissionsGranted = true
+            action()
+            return
+        }
+
+        bluetoothPermissionsGranted = false
+        pendingPermissionAction = action
+        bluetoothPermissionLauncher.launch(requiredBluetoothPermissions())
+    }
+
+    private fun hasRequiredBluetoothPermissions(): Boolean {
+        return requiredBluetoothPermissions().all { permission ->
+            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requiredBluetoothPermissions(): Array<String> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
 }
 
 @SuppressLint("MissingPermission")
@@ -62,6 +126,7 @@ class BluetoothInitActivity : ComponentActivity() {
 @Composable
 fun BluetoothInitScreen(
     uiState: BluetoothUiState,
+    canAccessDeviceDetails: Boolean,
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
     onDeviceClick: (BluetoothDevice) -> Unit,
@@ -110,11 +175,16 @@ fun BluetoothInitScreen(
             
             // Device list
             if (!uiState.isConnecting) {
-                if (uiState.devices.isEmpty() && !uiState.isScanning) {
+                if (
+                    uiState.devices.isEmpty() &&
+                    !uiState.isScanning &&
+                    uiState.error == null
+                ) {
                     EmptyState(onStartScan = onStartScan)
                 } else {
                     DeviceList(
                         devices = uiState.devices,
+                        canAccessDeviceDetails = canAccessDeviceDetails,
                         onDeviceClick = onDeviceClick
                     )
                 }
@@ -238,6 +308,7 @@ fun EmptyState(onStartScan: () -> Unit) {
 @Composable
 fun DeviceList(
     devices: List<BluetoothDevice>,
+    canAccessDeviceDetails: Boolean,
     onDeviceClick: (BluetoothDevice) -> Unit
 ) {
     LazyColumn(
@@ -255,7 +326,11 @@ fun DeviceList(
         }
         
         items(devices) { device ->
-            DeviceItem(device = device, onClick = { onDeviceClick(device) })
+            DeviceItem(
+                device = device,
+                canAccessDeviceDetails = canAccessDeviceDetails,
+                onClick = { onDeviceClick(device) }
+            )
         }
     }
 }
@@ -264,6 +339,7 @@ fun DeviceList(
 @Composable
 fun DeviceItem(
     device: BluetoothDevice,
+    canAccessDeviceDetails: Boolean,
     onClick: () -> Unit
 ) {
     Card(
@@ -286,11 +362,15 @@ fun DeviceItem(
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = device.name ?: "Unknown Device",
+                    text = if (canAccessDeviceDetails) {
+                        device.name ?: "Unknown Device"
+                    } else {
+                        "Bluetooth permission required"
+                    },
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = device.address,
+                    text = if (canAccessDeviceDetails) device.address else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

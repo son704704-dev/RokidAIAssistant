@@ -162,14 +162,19 @@ class PhotoGalleryViewModel(application: Application) : AndroidViewModel(applica
      * Delete single photo
      */
     fun deletePhoto(photoData: PhotoData) {
+        if (_uiState.value.isLoading) return
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
-            photoRepository.deletePhoto(photoData)
-            _uiState.update { 
-                it.copy(
-                    isLoading = false,
-                    currentDetailPhoto = null
-                )
+            try {
+                photoRepository.deletePhoto(photoData)
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        currentDetailPhoto = null,
+                        selectedPhotos = it.selectedPhotos - photoData.id
+                    )
+                }
             }
         }
     }
@@ -178,21 +183,22 @@ class PhotoGalleryViewModel(application: Application) : AndroidViewModel(applica
      * Delete selected photos
      */
     fun deleteSelectedPhotos() {
+        if (_uiState.value.isLoading) return
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, showDeleteConfirmDialog = false) }
             val selectedIds = _uiState.value.selectedPhotos
             val photosToDelete = photos.value.filter { selectedIds.contains(it.id) }
             
-            photosToDelete.forEach { photo ->
-                photoRepository.deletePhoto(photo)
-            }
-            
-            _uiState.update { 
-                it.copy(
-                    isLoading = false,
-                    selectedPhotos = emptySet(),
-                    isSelectionMode = false
-                )
+            try {
+                photosToDelete.forEach { photo -> photoRepository.deletePhoto(photo) }
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        selectedPhotos = emptySet(),
+                        isSelectionMode = false
+                    )
+                }
             }
         }
     }
@@ -201,15 +207,19 @@ class PhotoGalleryViewModel(application: Application) : AndroidViewModel(applica
      * Clear all photos
      */
     fun clearAllPhotos() {
+        if (_uiState.value.isLoading) return
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, showClearAllDialog = false) }
-            photoRepository.clearAll()
-            _uiState.update { 
-                it.copy(
-                    isLoading = false,
-                    selectedPhotos = emptySet(),
-                    isSelectionMode = false
-                )
+            try {
+                photoRepository.clearAll()
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        selectedPhotos = emptySet(),
+                        isSelectionMode = false
+                    )
+                }
             }
         }
     }

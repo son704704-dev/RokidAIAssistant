@@ -25,13 +25,11 @@ sealed class ProviderSetting {
     /**
      * Get the current API Key (if available)
      */
-    @Transient
     abstract val providerApiKey: String?
     
     /**
      * Get the Base URL
      */
-    @Transient
     abstract val providerBaseUrl: String
     
     /**
@@ -48,7 +46,7 @@ sealed class ProviderSetting {
         override val id: String = "gemini",
         override val displayName: String = "Google Gemini",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "gemini-3.6-flash",
         val baseUrl: String = "https://generativelanguage.googleapis.com/v1beta/"
     ) : ProviderSetting() {
@@ -70,7 +68,7 @@ sealed class ProviderSetting {
         override val id: String = "openai",
         override val displayName: String = "OpenAI",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "gpt-5.6-sol",
         val baseUrl: String = "https://api.openai.com/v1/",
         val organizationId: String = ""
@@ -93,7 +91,7 @@ sealed class ProviderSetting {
         override val id: String = "anthropic",
         override val displayName: String = "Anthropic Claude",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "claude-opus-5",
         val baseUrl: String = "https://api.anthropic.com/v1/"
     ) : ProviderSetting() {
@@ -115,7 +113,7 @@ sealed class ProviderSetting {
         override val id: String = "deepseek",
         override val displayName: String = "DeepSeek",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "deepseek-chat",
         val baseUrl: String = "https://api.deepseek.com/"
     ) : ProviderSetting() {
@@ -137,7 +135,7 @@ sealed class ProviderSetting {
         override val id: String = "groq",
         override val displayName: String = "Groq",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "openai/gpt-oss-120b",
         val baseUrl: String = "https://api.groq.com/openai/v1/"
     ) : ProviderSetting() {
@@ -159,7 +157,7 @@ sealed class ProviderSetting {
         override val id: String = "xai",
         override val displayName: String = "xAI Grok",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "grok-4.1-fast",
         val baseUrl: String = "https://api.x.ai/v1/"
     ) : ProviderSetting() {
@@ -181,7 +179,7 @@ sealed class ProviderSetting {
         override val id: String = "alibaba",
         override val displayName: String = "Alibaba Qwen",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "qwen3.7-flash",
         val baseUrl: String = "https://dashscope.aliyuncs.com/compatible-mode/v1/"
     ) : ProviderSetting() {
@@ -203,7 +201,7 @@ sealed class ProviderSetting {
         override val id: String = "zhipu",
         override val displayName: String = "Zhipu GLM",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         // TODO: Verify the default model ID against https://open.bigmodel.cn/ before the next release
         val modelId: String = "glm-5.1",
         val baseUrl: String = "https://open.bigmodel.cn/api/paas/v4/"
@@ -227,8 +225,8 @@ sealed class ProviderSetting {
         override val id: String = "baidu",
         override val displayName: String = "Baidu Ernie",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
-        val secretKey: String = "",
+        @Transient val apiKey: String = "",
+        @Transient val secretKey: String = "",
         val modelId: String = "ernie-4.0-8k",
         val baseUrl: String = "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/"
     ) : ProviderSetting() {
@@ -250,7 +248,7 @@ sealed class ProviderSetting {
         override val id: String = "perplexity",
         override val displayName: String = "Perplexity",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "sonar-pro",
         val baseUrl: String = "https://api.perplexity.ai/"
     ) : ProviderSetting() {
@@ -272,7 +270,7 @@ sealed class ProviderSetting {
         override val id: String = "moonshot",
         override val displayName: String = "Moonshot (Kimi)",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val modelId: String = "kimi-k3",
         val baseUrl: String = "https://api.moonshot.cn/v1/"
     ) : ProviderSetting() {
@@ -294,7 +292,7 @@ sealed class ProviderSetting {
         override val id: String = "mistral",
         override val displayName: String = "Mistral AI",
         override val enabled: Boolean = false,
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         // TODO: Verify the default model ID against https://docs.mistral.ai/getting-started/models/
         val modelId: String = "mistral-large-latest",
         val baseUrl: String = "https://api.mistral.ai/v1/"
@@ -320,7 +318,7 @@ sealed class ProviderSetting {
         override val displayName: String = "AnythingLLM",
         override val enabled: Boolean = false,
         val serverUrl: String = "",
-        val apiKey: String = "",
+        @Transient val apiKey: String = "",
         val workspaceSlug: String = ""
     ) : ProviderSetting() {
         @Transient
@@ -344,7 +342,7 @@ sealed class ProviderSetting {
         override val id: String = "custom",
         override val displayName: String = "Custom Service",
         override val enabled: Boolean = false,
-        val apiKey: String = "",  // Optional
+        @Transient val apiKey: String = "",  // Optional
         val modelId: String = "llama4",
         val baseUrl: String = "http://localhost:11434/v1/",
         val customName: String = ""

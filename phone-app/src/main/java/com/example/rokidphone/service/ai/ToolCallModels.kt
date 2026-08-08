@@ -123,13 +123,15 @@ data class ToolResult(
      */
     fun toResponseJson(): JSONObject {
         return JSONObject().apply {
-            put("status", if (success) "success" else "error")
             if (success) {
-                // Merge all key-value pairs from result into the response
+                // Never let tool-provided data overwrite the execution outcome.
                 for (key in result.keys()) {
+                    if (key == "status" || key == "error") continue
                     put(key, result.get(key))
                 }
-            } else {
+            }
+            put("status", if (success) "success" else "error")
+            if (!success) {
                 put("error", errorMessage ?: "Unknown error")
             }
         }

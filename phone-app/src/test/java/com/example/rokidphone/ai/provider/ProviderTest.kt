@@ -228,7 +228,7 @@ class ProviderTest {
     fun `Model has correct defaults`() {
         val model = Model(id = "gpt-4", name = "GPT-4")
         assertThat(model.description).isEmpty()
-        assertThat(model.contextLength).isEqualTo(0)
+        assertThat(model.contextLength).isNull()
         assertThat(model.supportsVision).isFalse()
         assertThat(model.supportsAudio).isFalse()
         assertThat(model.supportsFunctionCalling).isFalse()

@@ -5,6 +5,7 @@ import com.example.rokidphone.service.SpeechErrorCode
 import com.example.rokidphone.service.SpeechResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -43,35 +44,48 @@ class DeepgramSttService(
             
             val wavData = pcmToWav(audioData)
             
-            // Build URL with query parameters
-            val url = buildString {
-                append("$baseUrl/listen?")
-                append("model=nova-2&")  // Latest model
-                append("language=$languageCode&")
-                append("punctuate=true&")
-                append("smart_format=true")
-            }
+            val url = baseUrl.toHttpUrl().newBuilder()
+                .addPathSegment("listen")
+                .addQueryParameter("model", "nova-2")
+                .addQueryParameter("language", languageCode)
+                .addQueryParameter("punctuate", "true")
+                .addQueryParameter("smart_format", "true")
+                .build()
             
-            val result = executeWithRetry(TAG) { attempt ->
-                Log.d(TAG, "Sending Deepgram request (attempt $attempt)")
+            val result = try {
+                executeWithRetry(TAG) { attempt ->
+                    Log.d(TAG, "Sending Deepgram request (attempt $attempt)")
                 
-                val request = Request.Builder()
-                    .url(url)
-                    .addHeader("Authorization", "Token $apiKey")
-                    .addHeader("Content-Type", "audio/wav")
-                    .post(wavData.toRequestBody("audio/wav".toMediaType()))
-                    .build()
+                    val request = Request.Builder()
+                        .url(url)
+                        .addHeader("Authorization", "Token $apiKey")
+                        .addHeader("Content-Type", "audio/wav")
+                        .post(wavData.toRequestBody("audio/wav".toMediaType()))
+                        .build()
                 
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string()
+                    client.newCall(request).execute().use { response ->
+                        val responseBody = response.body?.string()
                     
-                    if (response.isSuccessful && responseBody != null) {
-                        parseTranscript(responseBody)
-                    } else {
-                        Log.e(TAG, "API error: ${response.code}, body: $responseBody")
-                        null
+                        if (response.isSuccessful && responseBody != null) {
+                            parseTranscript(responseBody)
+                        } else {
+                            Log.e(TAG, "Deepgram API error: HTTP ${response.code}")
+                            if (response.code in 400..499 && response.code !in setOf(408, 429)) {
+                                throw NonRetryableSttException(
+                                    response.code,
+                                    "Deepgram rejected the request (HTTP ${response.code})"
+                                )
+                            }
+                            null
+                        }
                     }
                 }
+            } catch (e: NonRetryableSttException) {
+                return@withContext SpeechResult.Error(
+                    message = e.message ?: "Deepgram rejected the request",
+                    errorCode = SpeechErrorCode.TRANSCRIPTION_ERROR,
+                    errorDetail = "HTTP ${e.statusCode}"
+                )
             }
             
             if (result != null) {
@@ -99,7 +113,7 @@ class DeepgramSttService(
                 Log.w(TAG, "Empty transcript in response")
                 null
             } else {
-                Log.d(TAG, "Transcription: $transcript")
+                Log.d(TAG, "Deepgram transcription completed (${transcript.length} characters)")
                 transcript
             }
         } catch (e: Exception) {

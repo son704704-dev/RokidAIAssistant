@@ -150,6 +150,8 @@ class RevAiSttService(
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error parsing message", e)
                                 error = e
+                                webSocket.close(1000, "Parse error")
+                                latch.countDown()
                             }
                         }
 

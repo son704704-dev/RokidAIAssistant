@@ -20,6 +20,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlin.concurrent.thread
 import kotlin.coroutines.resume
 
 /**
@@ -64,12 +65,17 @@ class HuaweiSisSttService(
                 
                 // Build WebSocket URL with authentication
                 val wsUrl = buildWebSocketUrl(timestamp, nonce)
-                Log.d(TAG, "WebSocket URL: $wsUrl")
+                Log.d(TAG, "WebSocket URL: ${wsUrl.substringBefore('?')}")
+                val recognitionTimeoutSeconds = maxOf(
+                    RECOGNITION_TIMEOUT_SECONDS,
+                    ((audioData.size + 31_999L) / 32_000L) + 30L
+                )
 
                 val result = suspendCancellableCoroutine { continuation ->
                     val latch = CountDownLatch(1)
                     var finalTranscript = ""
                     var error: Exception? = null
+                    var senderThread: Thread? = null
 
                     val request = Request.Builder()
                         .url(wsUrl)
@@ -92,22 +98,34 @@ class HuaweiSisSttService(
                             }
                             webSocket.send(startMessage.toString())
                             
-                            // Send audio data in chunks
-                            val chunkSize = 3200 // 100ms of PCM 16k16bit data
-                            var offset = 0
-                            while (offset < audioData.size) {
-                                val end = minOf(offset + chunkSize, audioData.size)
-                                val chunk = audioData.copyOfRange(offset, end)
-                                webSocket.send(chunk.toByteString())
-                                offset = end
-                                Thread.sleep(100) // Simulate real-time streaming
+                            // Stream from a dedicated thread so OkHttp can process acknowledgements
+                            // and server errors while audio is being uploaded.
+                            senderThread = thread(
+                                start = true,
+                                isDaemon = true,
+                                name = "HuaweiSisAudioSender"
+                            ) {
+                                try {
+                                    val chunkSize = 3200 // 100ms of 16kHz, 16-bit mono PCM
+                                    var offset = 0
+                                    while (offset < audioData.size && !Thread.currentThread().isInterrupted) {
+                                        val end = minOf(offset + chunkSize, audioData.size)
+                                        if (!webSocket.send(audioData.copyOfRange(offset, end).toByteString())) break
+                                        offset = end
+                                        Thread.sleep(100)
+                                    }
+                                    if (!Thread.currentThread().isInterrupted) {
+                                        webSocket.send(JSONObject().apply { put("command", "END") }.toString())
+                                    }
+                                } catch (_: InterruptedException) {
+                                    Thread.currentThread().interrupt()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to stream audio", e)
+                                    error = e
+                                    webSocket.close(1011, "Audio send failed")
+                                    latch.countDown()
+                                }
                             }
-                            
-                            // Send end message
-                            val endMessage = JSONObject().apply {
-                                put("command", "END")
-                            }
-                            webSocket.send(endMessage.toString())
                         }
 
                         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -151,6 +169,8 @@ class HuaweiSisSttService(
                                                 val errorMsg = json.optString("message", "Unknown error")
                                                 Log.e(TAG, "Huawei SIS error: $errorMsg")
                                                 error = Exception("Huawei SIS error: $errorMsg")
+                                                webSocket.close(1000, "Error")
+                                                latch.countDown()
                                             }
                                         }
                                     }
@@ -164,6 +184,8 @@ class HuaweiSisSttService(
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error parsing message", e)
                                 error = e
+                                webSocket.close(1000, "Parse error")
+                                latch.countDown()
                             }
                         }
 
@@ -182,11 +204,13 @@ class HuaweiSisSttService(
                     val webSocket = client.newWebSocket(request, listener)
 
                     continuation.invokeOnCancellation {
+                        senderThread?.interrupt()
                         webSocket.close(1000, "Cancelled")
                     }
 
                     // Wait for completion
-                    val completed = latch.await(RECOGNITION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    val completed = latch.await(recognitionTimeoutSeconds, TimeUnit.SECONDS)
+                    senderThread?.interrupt()
                     webSocket.close(1000, "Completed")
 
                     if (!completed) {

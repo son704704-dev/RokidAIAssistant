@@ -1,6 +1,7 @@
 package com.example.rokidphone.service.stt
 
 import com.example.rokidphone.service.SpeechResult
+import com.example.rokidphone.service.SpeechErrorCode
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -115,24 +116,15 @@ class BaseSttServiceTest {
     }
 
     @Test
-    fun `transcribeAudioFile - default implementation delegates to transcribe`() = runTest {
+    fun `transcribeAudioFile - default implementation rejects encoded input`() = runTest {
         // 測試：預設 encoded audio 轉錄應委派至 transcribe
-        var capturedData: ByteArray? = null
-        var capturedLanguage: String? = null
-        val service = TestBaseSttService(
-            transcribeBlock = { data, language ->
-                capturedData = data
-                capturedLanguage = language
-                SpeechResult.Success("delegated")
-            }
-        )
+        val service = TestBaseSttService()
         val audio = byteArrayOf(9, 8, 7)
 
         val result = service.transcribeAudioFile(audio, mimeType = "audio/mp4", languageCode = "en-US")
 
-        assertThat((result as SpeechResult.Success).text).isEqualTo("delegated")
-        assertThat(capturedData!!.toList()).isEqualTo(audio.toList())
-        assertThat(capturedLanguage).isEqualTo("en-US")
+        assertThat(result).isInstanceOf(SpeechResult.Error::class.java)
+        assertThat((result as SpeechResult.Error).errorCode).isEqualTo(SpeechErrorCode.NOT_SUPPORTED)
     }
 
     @Test

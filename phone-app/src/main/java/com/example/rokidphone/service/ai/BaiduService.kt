@@ -9,6 +9,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.FormBody
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -43,11 +44,6 @@ class BaiduService(
         internal const val DEFAULT_TOKEN_URL = "https://aip.baidubce.com/oauth/2.0/token"
         internal const val DEFAULT_BASE_CHAT_URL = "https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat"
         
-        // Token cache with thread-safe access
-        private var cachedToken: String? = null
-        private var tokenExpiry: Long = 0L
-        private val tokenMutex = Mutex()
-        
         // Model endpoint mapping
         private val modelEndpoints = mapOf(
             "ernie-4.0-8k" to "completions_pro",
@@ -61,6 +57,10 @@ class BaiduService(
     }
     
     override val provider = AiProvider.BAIDU
+
+    private var cachedToken: String? = null
+    private var tokenExpiry: Long = 0L
+    private val tokenMutex = Mutex()
     
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
@@ -89,8 +89,12 @@ class BaiduService(
             withContext(Dispatchers.IO) {
                 try {
                     val tokenRequest = Request.Builder()
-                        .url("$tokenUrl?grant_type=client_credentials&client_id=$apiKey&client_secret=$secretKey")
-                        .post("".toRequestBody("application/json".toMediaType()))
+                        .url(tokenUrl)
+                        .post(FormBody.Builder()
+                            .add("grant_type", "client_credentials")
+                            .add("client_id", apiKey)
+                            .add("client_secret", secretKey)
+                            .build())
                         .build()
                     
                     client.newCall(tokenRequest).execute().use { response ->

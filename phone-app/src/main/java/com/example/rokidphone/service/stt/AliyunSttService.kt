@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.Request
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -16,10 +17,10 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 /**
  * Alibaba Cloud (Aliyun) NLS Speech Recognition Service
@@ -45,6 +46,7 @@ class AliyunSttService(
         private const val TAG = "AliyunSTT"
         private const val WEBSOCKET_URL = "wss://nls-gateway.cn-shanghai.aliyuncs.com/ws/v1"
         private const val TOKEN_API_URL = "https://nls-meta.cn-shanghai.aliyuncs.com/"
+        private const val SUCCESS_STATUS = 20000000
     }
     
     override val provider = SttProvider.ALIBABA_ASR
@@ -175,10 +177,13 @@ class AliyunSttService(
                 }
                 
                 val latch = CountDownLatch(1)
-                var result: SpeechResult = SpeechResult.Error(
+                val completed = AtomicBoolean(false)
+                val latestTranscript = AtomicReference("")
+                val result = AtomicReference<SpeechResult>(SpeechResult.Error(
                     message = "Timeout",
                     errorCode = SpeechErrorCode.TRANSCRIPTION_TIMEOUT
-                )
+                ))
+                val taskId = UUID.randomUUID().toString()
                 
                 val url = "$WEBSOCKET_URL?token=$token"
                 
@@ -187,6 +192,14 @@ class AliyunSttService(
                     .addHeader("X-NLS-Token", token)  // Also add token in header as per docs
                     .build()
                 
+                fun finish(webSocket: WebSocket, finalResult: SpeechResult, reason: String) {
+                    if (completed.compareAndSet(false, true)) {
+                        result.set(finalResult)
+                        latch.countDown()
+                        webSocket.close(1000, reason)
+                    }
+                }
+
                 val webSocket = client.newWebSocket(request, object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
                         Log.d(TAG, "WebSocket connected")
@@ -195,7 +208,7 @@ class AliyunSttService(
                         val startCommand = JSONObject().apply {
                             put("header", JSONObject().apply {
                                 put("message_id", UUID.randomUUID().toString())
-                                put("task_id", UUID.randomUUID().toString())
+                                put("task_id", taskId)
                                 put("namespace", "SpeechTranscriber")
                                 put("name", "StartTranscription")
                                 put("appkey", appKey)
@@ -208,23 +221,16 @@ class AliyunSttService(
                                 put("enable_inverse_text_normalization", true)
                             })
                         }
-                        webSocket.send(startCommand.toString())
-                        
-                        // Send audio data
-                        val audioBase64 = Base64.encodeToString(audioData, Base64.NO_WRAP)
-                        webSocket.send(audioBase64)
-                        
-                        // Send stop command
-                        val stopCommand = JSONObject().apply {
-                            put("header", JSONObject().apply {
-                                put("message_id", UUID.randomUUID().toString())
-                                put("task_id", UUID.randomUUID().toString())
-                                put("namespace", "SpeechTranscriber")
-                                put("name", "StopTranscription")
-                                put("appkey", appKey)
-                            })
+                        if (!webSocket.send(startCommand.toString())) {
+                            finish(
+                                webSocket,
+                                SpeechResult.Error(
+                                    message = "Failed to start Aliyun transcription task",
+                                    errorCode = SpeechErrorCode.NETWORK_ERROR
+                                ),
+                                "Start command failed"
+                            )
                         }
-                        webSocket.send(stopCommand.toString())
                     }
                     
                     override fun onMessage(webSocket: WebSocket, text: String) {
@@ -232,46 +238,135 @@ class AliyunSttService(
                             val json = JSONObject(text)
                             val header = json.optJSONObject("header")
                             val name = header?.optString("name")
-                            
-                            if (name == "TranscriptionResultChanged" || name == "TranscriptionCompleted") {
-                                val payload = json.optJSONObject("payload")
-                                val transcript = payload?.optString("result")?.trim()
-                                
-                                if (!transcript.isNullOrEmpty()) {
-                                    result = SpeechResult.Success(transcript)
-                                    webSocket.close(1000, "Done")
-                                    latch.countDown()
+                            val status = header?.optInt("status", SUCCESS_STATUS) ?: SUCCESS_STATUS
+
+                            if (name == "TaskFailed" || status != SUCCESS_STATUS) {
+                                val message = header?.optString("status_text")
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: "Aliyun transcription failed (status=$status)"
+                                finish(
+                                    webSocket,
+                                    SpeechResult.Error(
+                                        message = message,
+                                        errorCode = SpeechErrorCode.RECOGNITION_FAILED
+                                    ),
+                                    "Task failed"
+                                )
+                                return
+                            }
+
+                            when (name) {
+                                "TranscriptionStarted" -> {
+                                    if (!webSocket.send(audioData.toByteString())) {
+                                        finish(
+                                            webSocket,
+                                            SpeechResult.Error(
+                                                message = "Failed to send audio to Aliyun",
+                                                errorCode = SpeechErrorCode.NETWORK_ERROR
+                                            ),
+                                            "Audio send failed"
+                                        )
+                                        return
+                                    }
+
+                                    val stopCommand = JSONObject().apply {
+                                        put("header", JSONObject().apply {
+                                            put("message_id", UUID.randomUUID().toString())
+                                            put("task_id", taskId)
+                                            put("namespace", "SpeechTranscriber")
+                                            put("name", "StopTranscription")
+                                            put("appkey", appKey)
+                                        })
+                                    }
+                                    if (!webSocket.send(stopCommand.toString())) {
+                                        finish(
+                                            webSocket,
+                                            SpeechResult.Error(
+                                                message = "Failed to stop Aliyun transcription task",
+                                                errorCode = SpeechErrorCode.NETWORK_ERROR
+                                            ),
+                                            "Stop command failed"
+                                        )
+                                    }
+                                }
+
+                                "TranscriptionResultChanged" -> {
+                                    json.optJSONObject("payload")
+                                        ?.optString("result")
+                                        ?.trim()
+                                        ?.takeIf { it.isNotEmpty() }
+                                        ?.let(latestTranscript::set)
+                                }
+
+                                "TranscriptionCompleted" -> {
+                                    json.optJSONObject("payload")
+                                        ?.optString("result")
+                                        ?.trim()
+                                        ?.takeIf { it.isNotEmpty() }
+                                        ?.let(latestTranscript::set)
+
+                                    val transcript = latestTranscript.get()
+                                    val finalResult = if (transcript.isNotEmpty()) {
+                                        SpeechResult.Success(transcript)
+                                    } else {
+                                        SpeechResult.Error(
+                                            message = "Aliyun returned an empty transcript",
+                                            errorCode = SpeechErrorCode.RECOGNITION_FAILED
+                                        )
+                                    }
+                                    finish(webSocket, finalResult, "Completed")
                                 }
                             }
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to parse message", e)
+                            finish(
+                                webSocket,
+                                SpeechResult.Error(
+                                    message = "Invalid Aliyun response: ${e.message}",
+                                    errorCode = SpeechErrorCode.RECOGNITION_FAILED
+                                ),
+                                "Invalid response"
+                            )
                         }
                     }
                     
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
                         Log.e(TAG, "WebSocket error", t)
-                        result = SpeechResult.Error(
-                            message = "Connection error: ${t.message}",
-                            errorCode = SpeechErrorCode.NETWORK_ERROR
+                        finish(
+                            webSocket,
+                            SpeechResult.Error(
+                                message = "Connection error: ${t.message}",
+                                errorCode = SpeechErrorCode.NETWORK_ERROR
+                            ),
+                            "Connection failed"
                         )
-                        latch.countDown()
                     }
                     
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                        latch.countDown()
+                        finish(
+                            webSocket,
+                            SpeechResult.Error(
+                                message = "Connection closed before transcription completed",
+                                errorCode = SpeechErrorCode.NETWORK_ERROR
+                            ),
+                            "Closed"
+                        )
                     }
                 })
                 
                 // Wait for result with timeout
                 if (!latch.await(30, TimeUnit.SECONDS)) {
-                    webSocket.close(1000, "Timeout")
-                    result = SpeechResult.Error(
-                        message = "Timeout",
-                        errorCode = SpeechErrorCode.TRANSCRIPTION_TIMEOUT
+                    finish(
+                        webSocket,
+                        SpeechResult.Error(
+                            message = "Timeout",
+                            errorCode = SpeechErrorCode.TRANSCRIPTION_TIMEOUT
+                        ),
+                        "Timeout"
                     )
                 }
                 
-                result
+                result.get()
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Transcription failed", e)

@@ -142,7 +142,10 @@ class ApiSettingsTest {
     fun `validateForSpeech returns missing service when no stt capable providers configured`() {
         // 測試：沒有可用 STT provider 時應回傳 MissingSpeechService
         val missing = ApiSettings()
-        val valid = ApiSettings(groqApiKey = "groq")
+        val valid = ApiSettings(
+            sttProvider = SttProvider.GROQ_WHISPER,
+            groqApiKey = "groq"
+        )
 
         assertThat(missing.validateForSpeech()).isInstanceOf(SettingsValidationResult.MissingSpeechService::class.java)
         assertThat(valid.validateForSpeech()).isEqualTo(SettingsValidationResult.Valid)

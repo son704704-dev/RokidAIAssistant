@@ -529,4 +529,5 @@
     <string name="recordings_status_analyzing">Анализ</string>
     <string name="recordings_status_analyzed">Проанализировано</string>
     <string name="recordings_status_error">Ошибка</string>
+    <string name="api_key_not_configured">Ключ API не настроен. Настройте ключ API в настройках.</string>
 </resources>

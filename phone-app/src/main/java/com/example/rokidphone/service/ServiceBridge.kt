@@ -238,9 +238,13 @@ object ServiceBridge {
     data class TranscriptionRequest(val recordingId: String, val filePath: String)
     private val _transcribeRecordingFlow = MutableSharedFlow<TranscriptionRequest>(
         replay = 0,
-        extraBufferCapacity = 5  // Buffer up to 5 pending requests
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val transcribeRecordingFlow: SharedFlow<TranscriptionRequest> = _transcribeRecordingFlow.asSharedFlow()
+
+    private val _transcriptionCompletedFlow = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    val transcriptionCompletedFlow: SharedFlow<String> = _transcriptionCompletedFlow.asSharedFlow()
     
     /**
      * Request glasses to start recording (called by ViewModel)
@@ -265,7 +269,6 @@ object ServiceBridge {
         Log.d(TAG, "Requesting transcription: $recordingId")
         _transcribeRecordingFlow.emit(TranscriptionRequest(recordingId, filePath))
     }
-    
     /**
      * Reset all persisted state. As a process-wide object this state would
      * otherwise survive service death and show a stale "connected" status.
@@ -277,5 +280,9 @@ object ServiceBridge {
         _bluetoothStateFlow.value = BluetoothConnectionState.DISCONNECTED
         _connectedDeviceNameFlow.value = null
         _latestPhotoPathFlow.value = null
+    }
+
+    fun notifyTranscriptionCompleted(recordingId: String) {
+        _transcriptionCompletedFlow.tryEmit(recordingId)
     }
 }

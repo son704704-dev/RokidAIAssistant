@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.rokidphone.data.SettingsRepository
 import com.example.rokidphone.data.db.*
 import com.example.rokidphone.service.EnhancedAIService
+import com.example.rokidphone.service.ServiceBridge
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -53,7 +55,7 @@ data class RecordingsUiState(
     val showDeleteDialog: Boolean = false,
     val showEditDialog: Boolean = false,
     val editingRecording: RecordingEntity? = null,
-    val processingRecordingId: String? = null,
+    val processingRecordingIds: Set<String> = emptySet(),
     val error: String? = null
 )
 
@@ -70,24 +72,41 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         loadRecordings()
         observeRecordingState()
+        viewModelScope.launch {
+            ServiceBridge.transcriptionCompletedFlow.collect { id ->
+                markProcessingFinished(id)
+            }
+        }
     }
     
     private fun loadRecordings() {
         viewModelScope.launch {
-            repository.getAllRecordings().collect { recordings ->
-                _uiState.update { state ->
-                    state.copy(
-                        recordings = recordings,
-                        filteredRecordings = applyFilterAndSort(recordings, state.filter, state.sort, state.searchQuery),
-                        isLoading = false
-                    )
+            repository.getAllRecordings()
+                .catch { e ->
+                    _uiState.update {
+                        it.copy(isLoading = false, error = e.message ?: "Failed to load recordings")
+                    }
                 }
-            }
+                .collect { recordings ->
+                    _uiState.update { state ->
+                        state.copy(
+                            recordings = recordings,
+                            filteredRecordings = applyFilterAndSort(recordings, state.filter, state.sort, state.searchQuery),
+                            isLoading = false
+                        )
+                    }
+                }
         }
         
         viewModelScope.launch {
-            val stats = repository.getStatistics()
-            _uiState.update { it.copy(statistics = stats) }
+            try {
+                val stats = repository.getStatistics()
+                _uiState.update { it.copy(statistics = stats) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = e.message ?: "Failed to load recording statistics") }
+            }
         }
     }
     
@@ -264,20 +283,20 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
     }
     
     fun updateTitle(id: String, title: String) {
-        viewModelScope.launch {
-            repository.updateTitle(id, title)
-            hideEditDialog()
-        }
+        launchRepositoryWrite(
+            block = { repository.updateTitle(id, title) },
+            onSuccess = { hideEditDialog() }
+        )
     }
     
     fun updateNotes(id: String, notes: String?) {
-        viewModelScope.launch {
+        launchRepositoryWrite {
             repository.updateNotes(id, notes)
         }
     }
     
     fun toggleFavorite(id: String) {
-        viewModelScope.launch {
+        launchRepositoryWrite {
             repository.toggleFavorite(id)
         }
     }
@@ -293,20 +312,20 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
     }
     
     fun deleteRecording(id: String) {
-        viewModelScope.launch {
+        launchRepositoryWrite {
             repository.deleteRecording(id)
             _uiState.update { state ->
-                if (state.selectedRecording?.id == id) {
-                    state.copy(selectedRecording = null)
-                } else {
-                    state
-                }
+                state.copy(
+                    selectedRecording = state.selectedRecording?.takeUnless { it.id == id },
+                    selectedIds = state.selectedIds - id,
+                    showDeleteDialog = false
+                )
             }
         }
     }
     
     fun deleteSelectedRecordings() {
-        viewModelScope.launch {
+        launchRepositoryWrite {
             val ids = _uiState.value.selectedIds.toList()
             repository.deleteRecordings(ids)
             clearSelection()
@@ -321,27 +340,27 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun transcribeRecording(id: String) {
         viewModelScope.launch {
-            _uiState.update { it.copy(processingRecordingId = id) }
+            markProcessingStarted(id)
+            var dispatched = false
             
             try {
                 // Get recording details
                 val recording = repository.getRecordingById(id)
                 if (recording == null) {
-                    _uiState.update { it.copy(error = "Recording not found", processingRecordingId = null) }
+                    _uiState.update { it.copy(error = "Recording not found") }
                     return@launch
                 }
                 
                 // Check if file path is valid
                 if (recording.filePath.isBlank()) {
                     Log.w(TAG, "Recording $id has empty file path, cannot transcribe")
-                    _uiState.update { it.copy(error = "Recording file not found", processingRecordingId = null) }
+                    _uiState.update { it.copy(error = "Recording file not found") }
                     return@launch
                 }
                 
                 // Skip if already transcribed and has AI response (prevent duplicate processing)
                 if (!recording.transcript.isNullOrBlank() && !recording.aiResponse.isNullOrBlank()) {
                     Log.d(TAG, "Recording $id already transcribed, skipping")
-                    _uiState.update { it.copy(processingRecordingId = null) }
                     return@launch
                 }
                 
@@ -349,21 +368,23 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
                 val file = java.io.File(recording.filePath)
                 if (!file.exists()) {
                     Log.e(TAG, "Recording file does not exist: ${recording.filePath}")
-                    _uiState.update { it.copy(error = "Recording file not found", processingRecordingId = null) }
+                    _uiState.update { it.copy(error = "Recording file not found") }
                     return@launch
                 }
                 
                 Log.d(TAG, "Transcribing recording: $id, path: ${recording.filePath}")
                 
                 // Request transcription via ServiceBridge
-                com.example.rokidphone.service.ServiceBridge.requestTranscribeRecording(id, recording.filePath)
-                
+                ServiceBridge.requestTranscribeRecording(id, recording.filePath)
+                dispatched = true
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Transcription failed", e)
                 repository.markError(id, e.message ?: "Transcription failed")
                 _uiState.update { it.copy(error = e.message) }
             } finally {
-                _uiState.update { it.copy(processingRecordingId = null) }
+                if (!dispatched) markProcessingFinished(id)
             }
         }
     }
@@ -373,17 +394,17 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun analyzeWithAi(id: String) {
         viewModelScope.launch {
-            _uiState.update { it.copy(processingRecordingId = id) }
+            markProcessingStarted(id)
             
             try {
                 val recording = repository.getRecordingById(id)
                 if (recording == null) {
-                    _uiState.update { it.copy(error = "Recording not found", processingRecordingId = null) }
+                    _uiState.update { it.copy(error = "Recording not found") }
                     return@launch
                 }
                 
                 if (recording.transcript.isNullOrBlank()) {
-                    _uiState.update { it.copy(error = "Please transcribe the recording first", processingRecordingId = null) }
+                    _uiState.update { it.copy(error = "Please transcribe the recording first") }
                     return@launch
                 }
                 
@@ -407,12 +428,14 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
                     _uiState.update { it.copy(error = e.message) }
                 }
                 
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, AI_ANALYSIS_FAILED, e)
                 repository.markError(id, e.message ?: AI_ANALYSIS_FAILED)
                 _uiState.update { it.copy(error = e.message) }
             } finally {
-                _uiState.update { it.copy(processingRecordingId = null) }
+                markProcessingFinished(id)
             }
         }
     }
@@ -421,6 +444,29 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
     
     fun clearError() {
         _uiState.update { it.copy(error = null) }
+    }
+
+    private fun markProcessingStarted(id: String) {
+        _uiState.update { it.copy(processingRecordingIds = it.processingRecordingIds + id) }
+    }
+
+    private fun markProcessingFinished(id: String) {
+        _uiState.update { it.copy(processingRecordingIds = it.processingRecordingIds - id) }
+    }
+
+    private fun launchRepositoryWrite(
+        onSuccess: () -> Unit = {},
+        block: suspend () -> Unit
+    ) = viewModelScope.launch {
+        try {
+            block()
+            onSuccess()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Recording update failed", e)
+            _uiState.update { it.copy(error = e.message ?: "Recording update failed") }
+        }
     }
     
     fun formatDuration(durationMs: Long): String {
@@ -434,8 +480,4 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
     
-    override fun onCleared() {
-        super.onCleared()
-        repository.release()
-    }
 }

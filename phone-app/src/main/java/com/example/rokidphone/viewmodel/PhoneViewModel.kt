@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 private const val TAG = "PhoneViewModel"
+private const val MAX_CONVERSATION_ITEMS = 200
 
 data class PhoneUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
@@ -27,8 +28,6 @@ data class PhoneUiState(
     val isServiceRunning: Boolean = false,
     val processingStatus: String? = null,
     val conversations: List<ConversationItem> = emptyList(),
-    val isScanning: Boolean = false,
-    val availableDevices: List<String> = emptyList(),
     val showApiKeyWarning: Boolean = false,  // Flag to show API key warning dialog
     val showInitialSetup: Boolean = false,   // Flag to show initial setup dialog (no API key configured)
     val latestPhotoPath: String? = null,     // Path to the latest received photo
@@ -162,7 +161,8 @@ class PhoneViewModel(application: Application) : AndroidViewModel(application) {
     fun addConversation(role: String, content: String) {
         _uiState.update { state ->
             state.copy(
-                conversations = state.conversations + ConversationItem(role, content)
+                conversations = (state.conversations + ConversationItem(role, content))
+                    .takeLast(MAX_CONVERSATION_ITEMS)
             )
         }
     }

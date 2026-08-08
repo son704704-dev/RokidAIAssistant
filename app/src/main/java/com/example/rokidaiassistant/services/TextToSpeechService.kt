@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -68,6 +69,8 @@ class TextToSpeechService(
         .build()
     
     private var currentAudioTrack: AudioTrack? = null
+    private var currentMediaPlayer: MediaPlayer? = null
+    private var currentMediaFile: File? = null
     
     // TTS completion callback
     private var onCompletionCallback: (() -> Unit)? = null
@@ -280,13 +283,21 @@ class TextToSpeechService(
      * Play audio data (MP3)
      */
     private fun playAudioData(audioData: ByteArray, onComplete: (() -> Unit)?) {
+        var tempFile: File? = null
+        var mediaPlayer: MediaPlayer? = null
         try {
+            stopMediaPlayer()
+
             // Save MP3 to temp file and play
-            val tempFile = File.createTempFile("tts_", ".mp3", context.cacheDir)
-            FileOutputStream(tempFile).use { it.write(audioData) }
-            
-            val mediaPlayer = android.media.MediaPlayer().apply {
-                setDataSource(tempFile.absolutePath)
+            val createdFile = File.createTempFile("tts_", ".mp3", context.cacheDir)
+            tempFile = createdFile
+            FileOutputStream(createdFile).use { it.write(audioData) }
+
+            mediaPlayer = MediaPlayer()
+            currentMediaPlayer = mediaPlayer
+            currentMediaFile = createdFile
+            mediaPlayer.apply {
+                setDataSource(createdFile.absolutePath)
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -295,18 +306,12 @@ class TextToSpeechService(
                 )
                 setOnCompletionListener {
                     Log.d(TAG, "Audio playback completed")
-                    it.release()
-                    if (!tempFile.delete()) {
-                        Log.w(TAG, "Failed to delete temp audio file: ${tempFile.absolutePath}")
-                    }
+                    finishMediaPlayer(it, createdFile)
                     onComplete?.invoke()
                 }
-                setOnErrorListener { _, what, extra ->
+                setOnErrorListener { player, what, extra ->
                     Log.e(TAG, "Audio playback error: what=$what, extra=$extra")
-                    release()
-                    if (!tempFile.delete()) {
-                        Log.w(TAG, "Failed to delete temp audio file: ${tempFile.absolutePath}")
-                    }
+                    finishMediaPlayer(player, createdFile)
                     onComplete?.invoke()
                     true
                 }
@@ -318,7 +323,41 @@ class TextToSpeechService(
             
         } catch (e: Exception) {
             Log.e(TAG, "Failed to play audio", e)
+            mediaPlayer?.let { finishMediaPlayer(it, tempFile) }
+                ?: tempFile?.delete()
             onComplete?.invoke()
+        }
+    }
+
+    private fun finishMediaPlayer(player: MediaPlayer, audioFile: File?) {
+        if (currentMediaPlayer === player) {
+            currentMediaPlayer = null
+        }
+        if (currentMediaFile == audioFile) {
+            currentMediaFile = null
+        }
+        runCatching { player.release() }
+            .onFailure { Log.w(TAG, "Failed to release MediaPlayer", it) }
+        if (audioFile?.exists() == true && !audioFile.delete()) {
+            Log.w(TAG, "Failed to delete temp audio file: ${audioFile.absolutePath}")
+        }
+    }
+
+    private fun stopMediaPlayer() {
+        val player = currentMediaPlayer
+        val audioFile = currentMediaFile
+        currentMediaPlayer = null
+        currentMediaFile = null
+        if (player != null) {
+            player.setOnCompletionListener(null)
+            player.setOnErrorListener(null)
+            runCatching {
+                if (player.isPlaying) player.stop()
+                player.release()
+            }.onFailure { Log.w(TAG, "Failed to stop MediaPlayer", it) }
+        }
+        if (audioFile?.exists() == true && !audioFile.delete()) {
+            Log.w(TAG, "Failed to delete temp audio file: ${audioFile.absolutePath}")
         }
     }
     
@@ -331,6 +370,7 @@ class TextToSpeechService(
             currentAudioTrack?.stop()
             currentAudioTrack?.release()
             currentAudioTrack = null
+            stopMediaPlayer()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop playback", e)
         }
@@ -348,6 +388,7 @@ class TextToSpeechService(
             
             currentAudioTrack?.release()
             currentAudioTrack = null
+            stopMediaPlayer()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to release resources", e)
         }
