@@ -5,6 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.Manifest
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -13,6 +15,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.example.rokidglasses.MainActivity
 import com.example.rokidglasses.R
 import kotlinx.coroutines.*
@@ -47,6 +50,8 @@ class WakeWordService : Service() {
     
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var audioRecord: AudioRecord? = null
+    private var listeningJob: Job? = null
+    @Volatile
     private var isListening = false
     private var lastWakeTime = 0L
     
@@ -54,6 +59,13 @@ class WakeWordService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "Cannot start wake-word listening without RECORD_AUDIO permission")
+            stopSelf()
+            return
+        }
         isRunning = true
         startListening()
     }
@@ -67,7 +79,8 @@ class WakeWordService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
-        stopListening()
+        isListening = false
+        listeningJob?.cancel()
         serviceScope.cancel()
     }
     
@@ -108,20 +121,26 @@ class WakeWordService : Service() {
     private fun startListening() {
         if (isListening) return
         
-        serviceScope.launch {
+        listeningJob = serviceScope.launch {
             try {
-                val bufferSize = AudioRecord.getMinBufferSize(
+                val minBufferSize = AudioRecord.getMinBufferSize(
                     SAMPLE_RATE,
                     CHANNEL_CONFIG,
                     AUDIO_FORMAT
                 )
-                
+                if (minBufferSize <= 0) {
+                    Log.e(TAG, "Invalid AudioRecord buffer size: $minBufferSize")
+                    stopSelf()
+                    return@launch
+                }
+                val bufferSize = minBufferSize * 2
+
                 audioRecord = AudioRecord(
                     MediaRecorder.AudioSource.MIC,
                     SAMPLE_RATE,
                     CHANNEL_CONFIG,
                     AUDIO_FORMAT,
-                    bufferSize * 2
+                    bufferSize
                 )
                 
                 if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
@@ -165,10 +184,14 @@ class WakeWordService : Service() {
                     
                     delay(50) // Small delay to avoid excessive CPU usage
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: SecurityException) {
                 Log.e(TAG, "No microphone permission", e)
             } catch (e: Exception) {
                 Log.e(TAG, "Error in wake word detection", e)
+            } finally {
+                releaseAudioRecord()
             }
         }
     }
@@ -181,12 +204,13 @@ class WakeWordService : Service() {
         return (sum / count).toInt()
     }
     
-    private fun stopListening() {
+    private fun releaseAudioRecord() {
         isListening = false
+        val recorder = audioRecord
+        audioRecord = null
         try {
-            audioRecord?.stop()
-            audioRecord?.release()
-            audioRecord = null
+            if (recorder?.recordingState == AudioRecord.RECORDSTATE_RECORDING) recorder.stop()
+            recorder?.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping AudioRecord", e)
         }

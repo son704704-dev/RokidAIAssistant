@@ -529,4 +529,5 @@
     <string name="recordings_status_analyzing">Đang phân tích</string>
     <string name="recordings_status_analyzed">Đã phân tích</string>
     <string name="recordings_status_error">Lỗi</string>
+    <string name="api_key_not_configured">Chưa cấu hình khóa API. Vui lòng thiết lập khóa API trong phần Cài đặt.</string>
 </resources>

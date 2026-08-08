@@ -8,11 +8,7 @@
       name="description"
       content="AI-powered voice and vision assistant for Rokid AR glasses. 13+ AI providers, 18+ STT engines, 13 languages."
     />
-    <!-- NOTE: Tailwind Play CDN is unversioned, has no SRI, and is not intended
-         for production. A compromised/updated CDN could inject script or break
-         styling. Ideally replace with a pre-built, versioned CSS file committed
-         to docs/ (pinned version + SRI is not available for the Play CDN JIT script). -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="./tailwind.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
@@ -702,69 +698,6 @@
     <!-- ====== i18n Script ====== -->
     <script>
       const translations = {
-        /* ==================== English (default) ==================== */
-        en: {
-          nav_features: "Features",
-          nav_arch: "Architecture",
-          nav_start: "Get Started",
-          hero_badge:
-            "Open Source \u2022 13+ AI Providers \u2022 18+ STT Engines",
-          hero_title: "AI Assistant",
-          hero_subtitle:
-            "AI-powered voice and vision assistant for Rokid AR glasses. Speak, see, and understand \u2014 all hands-free.",
-          hero_github: "View on GitHub",
-          hero_download: "Download APK",
-          stat_ai: "AI Providers",
-          stat_stt: "STT Engines",
-          stat_lang: "Languages",
-          feat_title: "What It Can Do",
-          feat_subtitle:
-            "A complete AI companion for your Rokid AR glasses, packed with powerful features.",
-          feat1_title: "Voice Interaction",
-          feat1_desc:
-            "Speak to AI through your glasses or phone. No hands required \u2014 natural voice dialogue powered by 18+ STT engines.",
-          feat2_title: "Vision & Photo Analysis",
-          feat2_desc:
-            "Capture what you see with the glasses camera. AI identifies, translates, and analyzes the world around you.",
-          feat3_title: "13+ AI Providers",
-          feat3_desc:
-            "Gemini, ChatGPT, Claude, DeepSeek, Groq, xAI, Qwen, GLM, Perplexity, Moonshot, and more. Switch freely anytime.",
-          feat4_title: "Recording & Analysis",
-          feat4_desc:
-            "Record audio from phone or glasses with automatic AI transcription and intelligent analysis of your recordings.",
-          feat5_title: "Phone \u2194 Glasses",
-          feat5_desc:
-            "Seamless communication via Rokid CXR SDK and Bluetooth SPP. Voice streams, photo transfers, and text responses in real-time.",
-          feat6_title: "13 Languages",
-          feat6_desc:
-            "English, \u4e2d\u6587, \u65e5\u672c\u8a9e, \ud55c\uad6d\uc5b4, Espa\u00f1ol, Fran\u00e7ais, Italiano, \u0420\u0443\u0441\u0441\u043a\u0438\u0439, \u0627\u0644\u0639\u0631\u0628\u064a\u0629, Ti\u1ebfng Vi\u1ec7t, \u0e44\u0e17\u0e22, and more.",
-          arch_title: "How It Works",
-          arch_subtitle:
-            "A dual-app architecture \u2014 the phone handles AI brainpower, the glasses handle display and input.",
-          arch_phone:
-            "AI processing, STT, CXR SDK communication, Room database for history, API key management.",
-          arch_glasses:
-            "Display chat UI, camera capture, voice wake-word detection, microphone input stream.",
-          arch_common:
-            "Shared protocol library \u2014 Message, MessageType, ConnectionState, and constants.",
-          tech_title: "Technology Stack",
-          start_title: "Get Started in 5 Minutes",
-          start_subtitle:
-            "Only a Gemini API key is needed. Get one free at Google AI Studio.",
-          step1_title: "Clone & Configure",
-          step1_desc:
-            "Clone the repo and add your API key to local.properties.",
-          step2_title: "Build & Install",
-          step2_desc: "Build both apps and install them on your devices.",
-          step3_title: "Connect & Talk",
-          step3_desc:
-            "Put on your glasses, pair via Bluetooth, and start talking to your personal AI assistant!",
-          providers_title: "Supported AI Providers",
-          provider_custom: "Custom (OpenAI-compatible)",
-          footer_star: "Star us on GitHub",
-          footer_copy: "Built with Kotlin \u2022 Powered by Rokid CXR SDK",
-        },
-
         /* ==================== 繁體中文 (台灣) ==================== */
         "zh-TW": {
           nav_features: "功能特色",
@@ -1610,29 +1543,45 @@
       /* ---- RTL languages ---- */
       const rtlLanguages = ["ar"];
 
+      /* The inline copy is the source of truth for English and fallbacks. */
+      const defaultTranslations = Object.fromEntries(
+        Array.from(document.querySelectorAll("[data-i18n]"), (el) => [
+          el.getAttribute("data-i18n"),
+          el.textContent.trim(),
+        ]),
+      );
+
       /* ---- Language detection & switching ---- */
+      function isSupportedLanguage(lang) {
+        return (
+          lang === "en" ||
+          Object.prototype.hasOwnProperty.call(translations, lang)
+        );
+      }
+
       function applyLanguage(lang) {
-        const dict = translations[lang] || translations["en"];
+        const resolvedLanguage = isSupportedLanguage(lang) ? lang : "en";
+        const dict = translations[resolvedLanguage] || {};
         document.querySelectorAll("[data-i18n]").forEach((el) => {
           const key = el.getAttribute("data-i18n");
           const value =
-            dict[key] !== undefined ? dict[key] : translations["en"][key];
+            dict[key] !== undefined ? dict[key] : defaultTranslations[key];
           if (value !== undefined) {
             el.textContent = value;
           }
         });
         // RTL handling
-        if (rtlLanguages.includes(lang)) {
+        if (rtlLanguages.includes(resolvedLanguage)) {
           document.documentElement.setAttribute("dir", "rtl");
         } else {
           document.documentElement.removeAttribute("dir");
         }
-        document.documentElement.setAttribute("lang", lang);
-        document.getElementById("lang-switcher").value = lang;
+        document.documentElement.setAttribute("lang", resolvedLanguage);
+        document.getElementById("lang-switcher").value = resolvedLanguage;
         try {
-          localStorage.setItem("rokid-lang", lang);
-        } catch (e) {
-          /* storage unavailable (private mode / blocked) - ignore */
+          localStorage.setItem("rokid-lang", resolvedLanguage);
+        } catch {
+          // Storage can be unavailable in private or restricted browsing modes.
         }
       }
 
@@ -1641,19 +1590,30 @@
         let saved = null;
         try {
           saved = localStorage.getItem("rokid-lang");
-        } catch (e) {
-          saved = null;
+        } catch {
+          // Fall through to browser-language detection when storage is blocked.
         }
-        if (saved && translations[saved]) return saved;
+        if (saved && isSupportedLanguage(saved)) return saved;
         // 2. Check browser language
-        const bl = navigator.language || navigator.userLanguage || "en";
-        if (bl.startsWith("zh")) {
-          if (/(?:-|^)(TW|HK|MO)\b/i.test(bl) || /Hant/i.test(bl))
+        const browserLanguage = String(
+          navigator.language || navigator.userLanguage || "en",
+        ).replace(/_/g, "-");
+        const languageParts = browserLanguage.split("-");
+        const short = languageParts[0].toLowerCase();
+        if (short === "zh") {
+          const subtags = languageParts
+            .slice(1)
+            .map((part) => part.toLowerCase());
+          if (
+            subtags.includes("tw") ||
+            subtags.includes("hk") ||
+            subtags.includes("mo") ||
+            subtags.includes("hant")
+          )
             return "zh-TW";
           return "zh-CN";
         }
-        const short = bl.split("-")[0];
-        if (translations[short]) return short;
+        if (isSupportedLanguage(short)) return short;
         return "en";
       }
 

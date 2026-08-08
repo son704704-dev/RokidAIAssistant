@@ -13,6 +13,7 @@ import com.example.rokidphone.data.ImageAnalysisResult
 import com.example.rokidphone.service.photo.PhotoData
 import com.example.rokidphone.service.photo.PhotoRepository
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -227,6 +228,8 @@ class ImageAnalysisViewModel(
                     }
                 }
                 
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Analysis failed", e)
                 
@@ -301,6 +304,8 @@ class ImageAnalysisViewModel(
                     }
                 }
                 
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(

@@ -529,4 +529,5 @@
     <string name="recordings_status_analyzing">جارٍ التحليل</string>
     <string name="recordings_status_analyzed">تم التحليل</string>
     <string name="recordings_status_error">خطأ</string>
+    <string name="api_key_not_configured">لم يتم إعداد مفتاح API. يُرجى إعداد مفتاح API في الإعدادات.</string>
 </resources>

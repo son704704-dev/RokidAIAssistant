@@ -526,4 +526,5 @@
     <string name="recordings_status_analyzing">分析中</string>
     <string name="recordings_status_analyzed">已分析</string>
     <string name="recordings_status_error">错误</string>
+    <string name="api_key_not_configured">API 密钥尚未配置。请在设置中配置 API 密钥。</string>
 </resources>

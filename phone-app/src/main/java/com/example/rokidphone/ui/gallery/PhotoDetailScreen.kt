@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -30,7 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.example.rokidphone.R
 import com.example.rokidphone.service.photo.PhotoData
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 
 /**
@@ -259,14 +260,19 @@ private fun ZoomablePhoto(
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     
-    val scope = rememberCoroutineScope()
-    
     LaunchedEffect(photoData.id) {
         isLoading = true
-        bitmap = withContext(Dispatchers.IO) {
-            loadBitmap(photoData, null)  // Full size
+        try {
+            bitmap = withContext(Dispatchers.IO) {
+                loadBitmap(photoData, null)  // Full size
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            bitmap = null
+        } finally {
+            isLoading = false
         }
-        isLoading = false
     }
     
     Box(
@@ -283,16 +289,31 @@ private fun ZoomablePhoto(
                 )
             }
             .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 5f)
-                    if (scale > 1f) {
-                        offset = Offset(
-                            x = (offset.x + pan.x).coerceIn(-500f * (scale - 1), 500f * (scale - 1)),
-                            y = (offset.y + pan.y).coerceIn(-500f * (scale - 1), 500f * (scale - 1))
-                        )
-                    } else {
-                        offset = Offset.Zero
-                    }
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var pointersRemain: Boolean
+                    do {
+                        val event = awaitPointerEvent()
+                        val pressedPointers = event.changes.count { it.pressed }
+                        // Leave one-finger gestures to HorizontalPager at the base scale.
+                        if (pressedPointers >= 2 || scale > 1f) {
+                            val zoom = event.calculateZoom()
+                            val pan = event.calculatePan()
+                            scale = (scale * zoom).coerceIn(1f, 5f)
+                            offset = if (scale > 1f) {
+                                Offset(
+                                    x = (offset.x + pan.x).coerceIn(-500f * (scale - 1), 500f * (scale - 1)),
+                                    y = (offset.y + pan.y).coerceIn(-500f * (scale - 1), 500f * (scale - 1))
+                                )
+                            } else {
+                                Offset.Zero
+                            }
+                            event.changes.forEach { change ->
+                                if (change.positionChanged()) change.consume()
+                            }
+                        }
+                        pointersRemain = event.changes.any { it.pressed }
+                    } while (pointersRemain)
                 }
             },
         contentAlignment = Alignment.Center

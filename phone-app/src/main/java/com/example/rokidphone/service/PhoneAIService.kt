@@ -34,6 +34,8 @@ import com.example.rokidphone.service.photo.PhotoRepository
 import com.example.rokidphone.service.photo.ReceivedPhoto
 import com.rokid.cxr.client.utils.ValueUtil
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Phone AI Service
@@ -110,6 +112,7 @@ class PhoneAIService : Service() {
     
     // Current voice conversation ID (for grouping voice interactions)
     private var currentVoiceConversationId: String? = null
+    private val conversationSessionMutex = Mutex()
     
     // Track recording IDs currently being processed to prevent duplicate transcription
     private val processingRecordingIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -616,7 +619,7 @@ class PhoneAIService : Service() {
             // Receive real-time transcription text from glasses and forward to phone UI
             MessageType.LIVE_TRANSCRIPTION -> {
                 message.payload?.let { text ->
-                    Log.d(TAG, "Received live transcription from glasses: $text")
+                    Log.d(TAG, "Received ${text.length}-character live transcription from glasses")
                     ServiceBridge.emitConversation(Message(
                         type = MessageType.LIVE_TRANSCRIPTION,
                         payload = text
@@ -774,7 +777,7 @@ class PhoneAIService : Service() {
             
             val transcript = when (transcriptResult) {
                 is SpeechResult.Success -> {
-                    Log.d(TAG, "Transcript: ${transcriptResult.text}")
+                    Log.d(TAG, "Transcription completed (${transcriptResult.text.length} characters)")
                     transcriptResult.text
                 }
                 is SpeechResult.Error -> {
@@ -821,7 +824,7 @@ class PhoneAIService : Service() {
             // Clean markdown formatting for better display on glasses
             val aiResponse = cleanMarkdown(rawAiResponse)
             
-            Log.d(TAG, "AI response: $aiResponse")
+            Log.d(TAG, "AI response completed (${aiResponse.length} characters)")
             
             // 6. Send AI response to glasses and phone UI
             bluetoothManager?.sendMessage(Message.aiResponseText(aiResponse))
@@ -942,7 +945,7 @@ class PhoneAIService : Service() {
         // User speech transcription
         serviceScope.launch {
             session.inputTranscription.collect { text ->
-                Log.d(TAG, "Live input transcription: $text")
+                Log.d(TAG, "Live input transcription update (${text.length} characters)")
                 bluetoothManager?.sendMessage(Message(
                     type = MessageType.LIVE_TRANSCRIPTION,
                     payload = text
@@ -958,7 +961,7 @@ class PhoneAIService : Service() {
         // AI response transcription
         serviceScope.launch {
             session.outputTranscription.collect { text ->
-                Log.d(TAG, "Live output transcription: $text")
+                Log.d(TAG, "Live output transcription update (${text.length} characters)")
                 bluetoothManager?.sendMessage(Message(
                     type = MessageType.AI_RESPONSE_TEXT,
                     payload = text
@@ -1095,7 +1098,7 @@ class PhoneAIService : Service() {
             val rawAiResponse = aiService?.chat(transcript) ?: getString(R.string.ai_analysis_unavailable)
             val aiResponse = cleanMarkdown(rawAiResponse)
             
-            Log.d(TAG, "Phone recording AI response: $aiResponse")
+            Log.d(TAG, "Phone recording AI response completed (${aiResponse.length} characters)")
             
             // 5. Update recording with AI response
             recordingRepository?.updateAiResponse(
@@ -1137,6 +1140,7 @@ class PhoneAIService : Service() {
             notifyProcessingError(recordingId, e.message ?: "Unknown error")
         } finally {
             processingRecordingIds.remove(recordingId)
+            ServiceBridge.notifyTranscriptionCompleted(recordingId)
         }
     }
     
@@ -1193,7 +1197,7 @@ class PhoneAIService : Service() {
     ): String? {
         return when (result) {
             is SpeechResult.Success -> {
-                Log.d(TAG, "Phone recording transcript: ${result.text}")
+                Log.d(TAG, "Phone recording transcription completed (${result.text.length} characters)")
                 result.text
             }
             is SpeechResult.Error -> {
@@ -1269,7 +1273,8 @@ class PhoneAIService : Service() {
      * Ensure a voice conversation session exists for persisting voice interactions
      * Creates a new conversation if needed, or continues using existing one from today
      */
-    private suspend fun ensureVoiceConversationSession(settings: ApiSettings) {
+    private suspend fun ensureVoiceConversationSession(settings: ApiSettings): String? =
+        conversationSessionMutex.withLock {
         try {
             if (currentVoiceConversationId == null) {
                 // First, try to find an existing voice session from today
@@ -1295,8 +1300,12 @@ class PhoneAIService : Service() {
                     Log.d(TAG, "Created voice conversation session: $currentVoiceConversationId")
                 }
             }
+            currentVoiceConversationId
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error creating voice conversation session", e)
+            null
         }
     }
     
@@ -1304,10 +1313,13 @@ class PhoneAIService : Service() {
      * Save user message to database
      */
     private suspend fun saveUserMessage(content: String) {
-        currentVoiceConversationId?.let { conversationId ->
+        val settings = SettingsRepository.getInstance(this).getSettings()
+        ensureVoiceConversationSession(settings)?.let { conversationId ->
             try {
                 conversationRepository?.addUserMessage(conversationId, content)
                 Log.d(TAG, "Saved user message to conversation: $conversationId")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Error saving user message", e)
             }
@@ -1318,7 +1330,8 @@ class PhoneAIService : Service() {
      * Save AI response to database
      */
     private suspend fun saveAssistantMessage(content: String, modelId: String?) {
-        currentVoiceConversationId?.let { conversationId ->
+        val settings = SettingsRepository.getInstance(this).getSettings()
+        ensureVoiceConversationSession(settings)?.let { conversationId ->
             try {
                 conversationRepository?.addAssistantMessage(
                     conversationId = conversationId,
@@ -1326,6 +1339,8 @@ class PhoneAIService : Service() {
                     modelId = modelId
                 )
                 Log.d(TAG, "Saved assistant message to conversation: $conversationId")
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Error saving assistant message", e)
             }

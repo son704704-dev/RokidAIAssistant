@@ -125,7 +125,7 @@ class ToolCallRouter(
      * @param call Function call to execute
      */
     private fun executeToolCall(call: GeminiFunctionCall) {
-        val job = scope.launch {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 // Update status to in progress
                 _statusUpdates.emit(call.id to ToolCallStatus.IN_PROGRESS)
@@ -144,10 +144,10 @@ class ToolCallRouter(
 
             } catch (e: CancellationException) {
                 Log.d(TAG, "Tool call cancelled: ${call.name} (id=${call.id})")
-                _statusUpdates.emit(call.id to ToolCallStatus.CANCELLED)
-
-                // Return result even if cancelled (to avoid model waiting forever)
-                _toolResults.emit(ToolResult.failure(call.id, "Tool call cancelled"))
+                withContext(NonCancellable) {
+                    _statusUpdates.emit(call.id to ToolCallStatus.CANCELLED)
+                    _toolResults.emit(ToolResult.failure(call.id, "Tool call cancelled"))
+                }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Tool call failed: ${call.name} (id=${call.id})", e)
@@ -159,6 +159,7 @@ class ToolCallRouter(
         }
 
         inFlightCalls[call.id] = job
+        job.start()
     }
 
     /**
@@ -212,19 +213,19 @@ class ToolCallRouter(
                     .post(requestBody.toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = httpClient.newCall(request).execute()
-
-                if (response.isSuccessful) {
-                    val responseBody = response.body?.string() ?: "{}"
-                    val responseJson = JSONObject(responseBody)
-
-                    ToolResult.success(call.id, responseJson)
-                } else {
-                    ToolResult.failure(
-                        call.id,
-                        "Gateway returned ${response.code}: ${response.message}"
-                    )
+                httpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val responseBody = response.body?.string() ?: "{}"
+                        ToolResult.success(call.id, JSONObject(responseBody))
+                    } else {
+                        ToolResult.failure(
+                            call.id,
+                            "Gateway returned ${response.code}: ${response.message}"
+                        )
+                    }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Remote execution failed for ${call.name}", e)
                 ToolResult.failure(call.id, "Remote execution failed: ${e.message}")

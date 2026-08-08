@@ -528,4 +528,5 @@
     <string name="recordings_status_analyzing">分析中</string>
     <string name="recordings_status_analyzed">分析済み</string>
     <string name="recordings_status_error">エラー</string>
+    <string name="api_key_not_configured">API キーが設定されていません。設定で API キーを設定してください。</string>
 </resources>

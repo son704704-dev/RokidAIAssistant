@@ -148,7 +148,7 @@ class ConversationRepository private constructor(context: Context) {
      */
     suspend fun updateConversationTitle(id: String, title: String) = withContext(Dispatchers.IO) {
         conversationDao.updateTitle(id, title)
-        Log.d(TAG, "Updated conversation title: $id -> $title")
+        Log.d(TAG, "Updated conversation title for $id")
     }
     
     /**
@@ -327,17 +327,13 @@ class ConversationRepository private constructor(context: Context) {
      * Delete a message
      */
     suspend fun deleteMessage(id: String) = withContext(Dispatchers.IO) {
-        val message = messageDao.getMessageById(id)
-        if (message == null) {
-            Log.w(TAG, "deleteMessage: no message found with id $id")
-            return@withContext
-        }
-        // Keep the denormalized message_count in sync with the deletion.
         database.withTransaction {
-            messageDao.deleteMessageById(id)
-            conversationDao.decrementMessageCount(message.conversationId)
+            val message = messageDao.getMessageById(id) ?: return@withTransaction
+            if (messageDao.deleteMessageById(id) > 0) {
+                conversationDao.decrementMessageCount(message.conversationId)
+                Log.d(TAG, "Deleted message: $id")
+            }
         }
-        Log.d(TAG, "Deleted message: $id")
     }
     
     /**
@@ -347,8 +343,8 @@ class ConversationRepository private constructor(context: Context) {
         database.withTransaction {
             messageDao.deleteMessagesForConversation(conversationId)
             conversationDao.resetMessageCount(conversationId)
+            Log.d(TAG, "Cleared messages for conversation: $conversationId")
         }
-        Log.d(TAG, "Cleared messages for conversation: $conversationId")
     }
     
     /**
@@ -381,7 +377,7 @@ class ConversationRepository private constructor(context: Context) {
                 .let { if (it.length == 50) "$it..." else it }
             
             conversationDao.updateTitle(conversationId, title)
-            Log.d(TAG, "Auto-generated title for $conversationId: $title")
+            Log.d(TAG, "Auto-generated title for $conversationId")
         }
     }
 }

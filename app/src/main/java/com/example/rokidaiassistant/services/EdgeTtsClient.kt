@@ -2,6 +2,8 @@ package com.example.rokidaiassistant.services
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -13,6 +15,8 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.coroutineContext
 
 /**
  * Microsoft Edge TTS Client
@@ -72,12 +76,14 @@ class EdgeTtsClient {
         pitch: String = "+0Hz",
         volume: String = "+0%"
     ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        var activeWebSocket: WebSocket? = null
         try {
             Log.d(TAG, "Starting speech synthesis: voice=$voice, text=${text.take(50)}...")
             
             val audioData = ByteArrayOutputStream()
             val latch = CountDownLatch(1)
             var error: Exception? = null
+            val turnEndReceived = AtomicBoolean(false)
             
             // Establish WebSocket connection
             val requestId = generateRequestId()
@@ -116,6 +122,7 @@ class EdgeTtsClient {
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     // Process text message
                     if (text.contains("Path:turn.end")) {
+                        turnEndReceived.set(true)
                         Log.d(TAG, "Received end signal")
                         webSocket.close(1000, "Completed")
                         latch.countDown()
@@ -130,14 +137,22 @@ class EdgeTtsClient {
                 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     Log.d(TAG, "WebSocket closed: code=$code, reason=$reason")
+                    if (!turnEndReceived.get() && error == null) {
+                        error = Exception("WebSocket closed before synthesis completed")
+                    }
                     if (latch.count > 0) latch.countDown()
                 }
             })
-            
+            activeWebSocket = webSocket
+
             // Wait for completion
-            if (!latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                webSocket.cancel()
-                return@withContext Result.failure(Exception("Speech synthesis timeout"))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS)
+            while (!latch.await(100, TimeUnit.MILLISECONDS)) {
+                coroutineContext.ensureActive()
+                if (System.nanoTime() >= deadline) {
+                    webSocket.cancel()
+                    return@withContext Result.failure(Exception("Speech synthesis timeout"))
+                }
             }
             
             error?.let {
@@ -153,6 +168,9 @@ class EdgeTtsClient {
             
             Result.success(result)
             
+        } catch (e: CancellationException) {
+            activeWebSocket?.cancel()
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Speech synthesis failed", e)
             Result.failure(e)

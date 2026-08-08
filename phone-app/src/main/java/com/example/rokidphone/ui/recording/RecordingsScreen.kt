@@ -47,8 +47,17 @@ fun RecordingsScreen(
     var showFilterMenu by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
     var showRecordingOptions by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(uiState.error) {
+        uiState.error?.let { error ->
+            snackbarHostState.showSnackbar(error)
+            viewModel.clearError()
+        }
+    }
     
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { 
@@ -125,14 +134,21 @@ fun RecordingsScreen(
             Box {
                 val recordingState = uiState.recordingState
                 
-                if (recordingState is RecordingState.Recording) {
+                if (recordingState is RecordingState.Recording ||
+                    recordingState is RecordingState.Paused
+                ) {
                     // Show stop button when recording
                     ExtendedFloatingActionButton(
                         onClick = { viewModel.stopRecording() },
                         containerColor = MaterialTheme.colorScheme.error,
                         icon = { Icon(Icons.Default.Stop, contentDescription = null) },
                         text = { 
-                            Text(viewModel.formatDuration(recordingState.durationMs))
+                            val duration = when (recordingState) {
+                                is RecordingState.Recording -> recordingState.durationMs
+                                is RecordingState.Paused -> recordingState.durationMs
+                                else -> 0
+                            }
+                            Text(viewModel.formatDuration(duration))
                         }
                     )
                 } else {
@@ -219,7 +235,7 @@ fun RecordingsScreen(
                             recording = recording,
                             isSelected = uiState.selectedIds.contains(recording.id),
                             isSelectionMode = uiState.isSelectionMode,
-                            isProcessing = uiState.processingRecordingId == recording.id,
+                            isProcessing = recording.id in uiState.processingRecordingIds,
                             formatDuration = { viewModel.formatDuration(it) },
                             onClick = {
                                 if (uiState.isSelectionMode) {
@@ -281,13 +297,6 @@ fun RecordingsScreen(
         )
     }
     
-    // Error snackbar
-    uiState.error?.let { error ->
-        LaunchedEffect(error) {
-            kotlinx.coroutines.delay(3000)
-            viewModel.clearError()
-        }
-    }
 }
 
 @Composable

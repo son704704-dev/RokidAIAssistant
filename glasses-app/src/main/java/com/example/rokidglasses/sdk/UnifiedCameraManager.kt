@@ -7,6 +7,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -78,36 +82,40 @@ class UnifiedCameraManager(
     
     // Camera2 implementation (wrapped)
     private var camera2Manager: Camera2Wrapper? = null
+    private val lifecycleMutex = Mutex()
     
     /**
      * Initialize the camera manager.
      * Glasses side uses Camera2 API.
      */
     suspend fun initialize(): Result<Unit> = withContext(Dispatchers.IO) {
-        _cameraState.value = UnifiedCameraState.Initializing
-        
-        try {
-            currentMode = CameraMode.CAMERA2
-            Log.d(TAG, "Using Camera2 mode for glasses")
-            
-            val result = initializeCamera2()
-            
-            if (result.isSuccess) {
-                _cameraState.value = UnifiedCameraState.Ready
-                Log.d(TAG, "Camera initialized: ${getCameraTypeName()}")
-            } else {
-                _cameraState.value = UnifiedCameraState.Error(
-                    result.exceptionOrNull()?.message ?: "Initialization failed",
-                    getCameraTypeName()
-                )
+        lifecycleMutex.withLock {
+            _cameraState.value = UnifiedCameraState.Initializing
+
+            try {
+                currentMode = when (preferredMode) {
+                    CameraMode.AUTO, CameraMode.CAMERA2 -> CameraMode.CAMERA2
+                }
+                Log.d(TAG, "Using Camera2 mode for glasses")
+
+                val result = initializeCamera2()
+                if (result.isSuccess) {
+                    _cameraState.value = UnifiedCameraState.Ready
+                    Log.d(TAG, "Camera initialized: ${getCameraTypeName()}")
+                } else {
+                    _cameraState.value = UnifiedCameraState.Error(
+                        result.exceptionOrNull()?.message ?: "Initialization failed",
+                        getCameraTypeName()
+                    )
+                }
+                result
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize camera", e)
+                _cameraState.value = UnifiedCameraState.Error(e.message ?: "Unknown error", getCameraTypeName())
+                Result.failure(e)
             }
-            
-            result
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize camera", e)
-            _cameraState.value = UnifiedCameraState.Error(e.message ?: "Unknown error", getCameraTypeName())
-            Result.failure(e)
         }
     }
     
@@ -117,13 +125,18 @@ class UnifiedCameraManager(
     private suspend fun initializeCamera2(): Result<Unit> {
         return try {
             Log.d(TAG, "Initializing Camera2 API...")
-            camera2Manager = Camera2Wrapper(context)
-            val result = camera2Manager!!.initialize()
+            camera2Manager?.release()
+            camera2Manager = null
+            activeCamera = null
+            val manager = Camera2Wrapper(context)
+            val result = manager.initialize()
             
             if (result.isSuccess) {
-                activeCamera = camera2Manager
+                camera2Manager = manager
+                activeCamera = manager
                 Log.d(TAG, "Camera2 initialized successfully")
             } else {
+                manager.release()
                 Log.e(TAG, "Camera2 initialization failed: ${result.exceptionOrNull()?.message}")
             }
             
@@ -140,30 +153,32 @@ class UnifiedCameraManager(
      * @return ByteArray of JPEG compressed photo data, or null if capture failed
      */
     suspend fun capturePhoto(): ByteArray? = withContext(Dispatchers.IO) {
-        if (activeCamera == null) {
-            Log.e(TAG, "Camera not initialized")
-            _cameraState.value = UnifiedCameraState.Error("Camera not initialized", getCameraTypeName())
-            return@withContext null
-        }
-        
-        _cameraState.value = UnifiedCameraState.Capturing
-        
-        try {
-            val photoData = camera2Manager?.capturePhotoSimple()
-            
-            if (photoData != null) {
-                _cameraState.value = UnifiedCameraState.Success(photoData, getCameraTypeName())
-                Log.d(TAG, "Photo captured: ${photoData.size} bytes using ${getCameraTypeName()}")
-            } else {
-                _cameraState.value = UnifiedCameraState.Error("Capture returned null", getCameraTypeName())
+        lifecycleMutex.withLock {
+            val manager = camera2Manager
+            val state = _cameraState.value
+            if ((state !is UnifiedCameraState.Ready && state !is UnifiedCameraState.Success) || manager == null) {
+                Log.e(TAG, "Camera not ready")
+                _cameraState.value = UnifiedCameraState.Error("Camera not ready", getCameraTypeName())
+                return@withLock null
             }
-            
-            photoData
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Photo capture failed", e)
-            _cameraState.value = UnifiedCameraState.Error(e.message ?: "Capture failed", getCameraTypeName())
-            null
+
+            _cameraState.value = UnifiedCameraState.Capturing
+            try {
+                val photoData = manager.capturePhotoSimple()
+                if (photoData != null) {
+                    _cameraState.value = UnifiedCameraState.Success(photoData, manager.getCameraTypeName())
+                    Log.d(TAG, "Photo captured: ${photoData.size} bytes using ${manager.getCameraTypeName()}")
+                } else {
+                    _cameraState.value = UnifiedCameraState.Error("Capture returned null", manager.getCameraTypeName())
+                }
+                photoData
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Photo capture failed", e)
+                _cameraState.value = UnifiedCameraState.Error(e.message ?: "Capture failed", manager.getCameraTypeName())
+                null
+            }
         }
     }
     
@@ -171,7 +186,7 @@ class UnifiedCameraManager(
      * Get the current camera type name.
      */
     fun getCameraTypeName(): String {
-        return "Camera2 API"
+        return activeCamera?.getCameraTypeName() ?: "Camera2 API"
     }
     
     /**
@@ -189,10 +204,15 @@ class UnifiedCameraManager(
      * Release all camera resources.
      */
     fun release() {
-        camera2Manager?.release()
-        activeCamera = null
-        _cameraState.value = UnifiedCameraState.Idle
-        Log.d(TAG, "Camera resources released")
+        runBlocking {
+            lifecycleMutex.withLock {
+                camera2Manager?.release()
+                camera2Manager = null
+                activeCamera = null
+                _cameraState.value = UnifiedCameraState.Idle
+                Log.d(TAG, "Camera resources released")
+            }
+        }
     }
 }
 
@@ -202,14 +222,14 @@ class UnifiedCameraManager(
 internal class Camera2Wrapper(private val context: Context) : CxrCameraInterface {
     
     private val glassesCameraManager = GlassesCameraManager(context)
+    @Volatile private var opened = false
     
     override suspend fun initialize(): Result<Unit> {
-        return glassesCameraManager.initialize()
+        return glassesCameraManager.initialize().also { opened = it.isSuccess }
     }
     
     override suspend fun openCamera(width: Int, height: Int, quality: Int): Result<Unit> {
-        // Camera2 opens camera during capture, not separately
-        return Result.success(Unit)
+        return if (opened) Result.success(Unit) else initialize()
     }
     
     override suspend fun capturePhoto(callback: PhotoResultCallback): Result<Unit> {
@@ -229,14 +249,15 @@ internal class Camera2Wrapper(private val context: Context) : CxrCameraInterface
     }
     
     override suspend fun closeCamera() {
-        // Camera2 releases after capture
+        release()
     }
     
     override fun release() {
         glassesCameraManager.release()
+        opened = false
     }
     
-    override fun isCameraOpen(): Boolean = true
+    override fun isCameraOpen(): Boolean = opened
     
     override fun getCameraTypeName(): String = "Camera2 API"
     

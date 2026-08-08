@@ -13,12 +13,17 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.rokidcommon.protocol.photo.PhotoTransferState
+import com.example.rokidcommon.protocol.photo.PhotoTransferConstants
 import com.example.rokidglasses.MainActivity
 import com.example.rokidglasses.R
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.IOException
 
 /**
  * Photo capture state for service
@@ -86,7 +91,10 @@ class CameraService : Service() {
     private var cameraManager: GlassesCameraManager? = null
     
     // Bluetooth socket (set by ViewModel when connected)
-    private var bluetoothSocket: BluetoothSocket? = null
+    @Volatile private var bluetoothSocket: BluetoothSocket? = null
+    private val socketWriteMutex = Mutex()
+    private val photoControlPackets = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    private var controlReaderJob: Job? = null
     
     // Transfer protocol
     private var transferProtocol: PhotoTransferProtocol? = null
@@ -112,7 +120,13 @@ class CameraService : Service() {
         cameraManager = GlassesCameraManager(this)
         
         serviceScope.launch {
-            cameraManager?.initialize()
+            try {
+                cameraManager?.initialize()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Camera initialization failed", e)
+            }
         }
     }
     
@@ -130,7 +144,7 @@ class CameraService : Service() {
             }
         }
         
-        return START_STICKY
+        return START_NOT_STICKY
     }
     
     override fun onBind(intent: Intent?): IBinder {
@@ -142,10 +156,10 @@ class CameraService : Service() {
         Log.d(TAG, "CameraService destroyed")
         isRunning = false
         
+        serviceScope.cancel()
+        controlReaderJob = null
         cameraManager?.release()
         cameraManager = null
-        
-        serviceScope.cancel()
     }
     
     /**
@@ -153,19 +167,73 @@ class CameraService : Service() {
      * Must be called after Bluetooth connection is established.
      */
     fun setBluetoothSocket(socket: BluetoothSocket?) {
+        controlReaderJob?.cancel()
+        controlReaderJob = null
         bluetoothSocket = socket
         
         if (socket != null && socket.isConnected) {
-            transferProtocol = PhotoTransferProtocol(socket) { current, total ->
-                val progress = current.toFloat() / total
-                _captureState.value = PhotoCaptureState.Transferring(progress)
-                
-                Log.d(TAG, "Transfer progress: $current / $total (${(progress * 100).toInt()}%)")
-            }
+            transferProtocol = PhotoTransferProtocol(
+                sendPacket = { packet ->
+                    socketWriteMutex.withLock {
+                        val activeSocket = bluetoothSocket
+                        if (activeSocket !== socket || !socket.isConnected) {
+                            false
+                        } else {
+                            try {
+                                socket.outputStream.write(packet)
+                                socket.outputStream.flush()
+                                true
+                            } catch (e: IOException) {
+                                Log.e(TAG, "Photo control write failed", e)
+                                false
+                            }
+                        }
+                    }
+                },
+                controlPackets = photoControlPackets,
+                onProgress = { current, total ->
+                    val progress = current.toFloat() / total
+                    _captureState.value = PhotoCaptureState.Transferring(progress)
+                    Log.d(TAG, "Transfer progress: $current / $total (${(progress * 100).toInt()}%)")
+                }
+            )
+            startControlReader(socket)
             updateNotification(getString(R.string.bluetooth_connected_ready))
         } else {
             transferProtocol = null
             updateNotification(getString(R.string.waiting_bluetooth_connection))
+        }
+    }
+
+    private fun startControlReader(socket: BluetoothSocket) {
+        controlReaderJob = serviceScope.launch(Dispatchers.IO) {
+            var pending = ByteArray(0)
+            val buffer = ByteArray(64)
+            try {
+                while (isActive && bluetoothSocket === socket && socket.isConnected) {
+                    val count = socket.inputStream.read(buffer)
+                    if (count < 0) break
+                    val incoming = ByteArray(pending.size + count)
+                    pending.copyInto(incoming)
+                    buffer.copyInto(incoming, pending.size, 0, count)
+                    var offset = 0
+                    while (offset < incoming.size) {
+                        val length = when (incoming[offset]) {
+                            PhotoTransferConstants.PACKET_TYPE_ACK -> PhotoTransferConstants.ACK_PACKET_SIZE
+                            PhotoTransferConstants.PACKET_TYPE_RETRY -> PhotoTransferConstants.RETRY_PACKET_SIZE
+                            else -> throw IOException("Unexpected frame on photo control socket")
+                        }
+                        if (incoming.size - offset < length) break
+                        photoControlPackets.emit(incoming.copyOfRange(offset, offset + length))
+                        offset += length
+                    }
+                    pending = incoming.copyOfRange(offset, incoming.size)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (bluetoothSocket === socket) Log.e(TAG, "Photo control read failed", e)
+            }
         }
     }
     
@@ -184,7 +252,8 @@ class CameraService : Service() {
             }
             
             // Check Bluetooth connection
-            if (bluetoothSocket == null || !bluetoothSocket!!.isConnected) {
+            val socket = bluetoothSocket
+            if (socket?.isConnected != true) {
                 val error = getString(R.string.bluetooth_not_connected)
                 _captureState.value = PhotoCaptureState.Error(error)
                 onError?.invoke(error)
@@ -205,7 +274,7 @@ class CameraService : Service() {
             }
             
             Log.d(TAG, "Photo captured: ${rawImageData.size} bytes")
-            onCaptureComplete?.invoke(rawImageData)
+            notifyCaptureComplete(rawImageData)
             
             // Step 2: Compress photo
             Log.d(TAG, "Step 2: Compressing photo...")
@@ -220,11 +289,13 @@ class CameraService : Service() {
             _captureState.value = PhotoCaptureState.Transferring(0f)
             updateNotification("Transferring...")
             
-            val transferResult = transferProtocol?.sendPhoto(compressedData)
+            val protocol = transferProtocol
+            val transferResult = protocol?.sendPhoto(compressedData)
             
             if (transferResult == null) {
                 val error = "Transfer protocol not initialized"
                 _captureState.value = PhotoCaptureState.Error(error)
+                notifyError(error)
                 return@withContext Result.failure(IllegalStateException(error))
             }
             
@@ -233,7 +304,7 @@ class CameraService : Service() {
                     Log.d(TAG, "Transfer complete: $stats")
                     _captureState.value = PhotoCaptureState.Success(stats.elapsedTimeMs)
                     updateNotification("Transfer complete (${stats.elapsedTimeMs}ms)")
-                    onTransferComplete?.invoke(stats)
+                    notifyTransferComplete(stats)
                     
                     // Reset to idle after delay
                     serviceScope.launch {
@@ -250,16 +321,18 @@ class CameraService : Service() {
                     Log.e(TAG, "Transfer failed", error)
                     _captureState.value = PhotoCaptureState.Error(error.message ?: "Transfer failed")
                     updateNotification("Transfer failed")
-                    onError?.invoke(error.message ?: "Transfer failed")
+                    notifyError(error.message ?: "Transfer failed")
                     Result.failure(error)
                 }
             )
             
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Capture and send failed", e)
             _captureState.value = PhotoCaptureState.Error(e.message ?: "Unknown error")
             updateNotification("Error: ${e.message}")
-            onError?.invoke(e.message ?: "Unknown error")
+            notifyError(e.message ?: "Unknown error")
             Result.failure(e)
         }
     }
@@ -278,18 +351,32 @@ class CameraService : Service() {
             if (imageData != null) {
                 _captureState.value = PhotoCaptureState.Success(0)
                 updateNotification("Photo captured")
-                onCaptureComplete?.invoke(imageData)
+                notifyCaptureComplete(imageData)
             } else {
                 _captureState.value = PhotoCaptureState.Error("Capture failed")
             }
             
             imageData
             
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Capture failed", e)
             _captureState.value = PhotoCaptureState.Error(e.message ?: "Capture failed")
             null
         }
+    }
+
+    private fun notifyCaptureComplete(data: ByteArray) {
+        serviceScope.launch(Dispatchers.Main.immediate) { onCaptureComplete?.invoke(data) }
+    }
+
+    private fun notifyTransferComplete(stats: TransferStatistics) {
+        serviceScope.launch(Dispatchers.Main.immediate) { onTransferComplete?.invoke(stats) }
+    }
+
+    private fun notifyError(message: String) {
+        serviceScope.launch(Dispatchers.Main.immediate) { onError?.invoke(message) }
     }
     
     // ==================== Notification Management ====================

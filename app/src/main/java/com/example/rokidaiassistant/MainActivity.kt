@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.all { it.value }
+        val allGranted = permissions.isNotEmpty() && permissions.all { it.value }
         if (allGranted) {
             checkBluetoothAndProceed()
         } else {

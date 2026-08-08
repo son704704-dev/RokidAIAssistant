@@ -1,5 +1,6 @@
 package com.example.rokidphone.ui.recording
 
+import android.media.MediaPlayer
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -19,6 +20,7 @@ import com.example.rokidphone.R
 import com.example.rokidphone.data.db.*
 import com.example.rokidphone.ui.theme.ExtendedTheme
 import com.example.rokidphone.viewmodel.RecordingViewModel
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -38,6 +40,26 @@ fun RecordingDetailScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showEditDialog by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
+    var isPreparing by remember { mutableStateOf(false) }
+    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var playbackError by remember { mutableStateOf<String?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    DisposableEffect(recording?.filePath) {
+        onDispose {
+            mediaPlayer?.release()
+            mediaPlayer = null
+            isPlaying = false
+            isPreparing = false
+        }
+    }
+
+    LaunchedEffect(playbackError) {
+        playbackError?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            playbackError = null
+        }
+    }
     
     // Load recording
     LaunchedEffect(recordingId) {
@@ -54,6 +76,7 @@ fun RecordingDetailScreen(
     }
     
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(recording?.title ?: stringResource(R.string.recording_detail)) },
@@ -103,8 +126,64 @@ fun RecordingDetailScreen(
                 PlayerCard(
                     recording = rec,
                     isPlaying = isPlaying,
+                    isPreparing = isPreparing,
                     formatDuration = { viewModel.formatDuration(it) },
-                    onPlayPause = { isPlaying = !isPlaying },
+                    onPlayPause = {
+                        val activePlayer = mediaPlayer
+                        when {
+                            activePlayer != null && isPlaying -> {
+                                activePlayer.pause()
+                                isPlaying = false
+                            }
+                            activePlayer != null && !isPreparing -> {
+                                activePlayer.start()
+                                isPlaying = true
+                            }
+                            activePlayer == null -> {
+                                val audioFile = File(rec.filePath)
+                                if (!audioFile.isFile) {
+                                    playbackError = "Audio file is not available"
+                                } else {
+                                    try {
+                                        isPreparing = true
+                                        val newPlayer = MediaPlayer()
+                                        newPlayer.setOnPreparedListener { preparedPlayer ->
+                                            if (mediaPlayer === preparedPlayer) {
+                                                isPreparing = false
+                                                preparedPlayer.start()
+                                                isPlaying = true
+                                            }
+                                        }
+                                        newPlayer.setOnCompletionListener { completedPlayer ->
+                                            if (mediaPlayer === completedPlayer) {
+                                                isPlaying = false
+                                                completedPlayer.seekTo(0)
+                                            }
+                                        }
+                                        newPlayer.setOnErrorListener { failedPlayer, _, _ ->
+                                            if (mediaPlayer === failedPlayer) {
+                                                playbackError = "Unable to play this recording"
+                                                isPlaying = false
+                                                isPreparing = false
+                                                mediaPlayer = null
+                                            }
+                                            failedPlayer.release()
+                                            true
+                                        }
+                                        newPlayer.setDataSource(audioFile.absolutePath)
+                                        mediaPlayer = newPlayer
+                                        newPlayer.prepareAsync()
+                                    } catch (e: Exception) {
+                                        mediaPlayer?.release()
+                                        mediaPlayer = null
+                                        isPreparing = false
+                                        isPlaying = false
+                                        playbackError = e.message ?: "Unable to play this recording"
+                                    }
+                                }
+                            }
+                        }
+                    },
                     modifier = Modifier.padding(16.dp)
                 )
                 
@@ -120,7 +199,7 @@ fun RecordingDetailScreen(
                 // Transcript section
                 TranscriptSection(
                     recording = rec,
-                    isProcessing = uiState.processingRecordingId == rec.id,
+                    isProcessing = rec.id in uiState.processingRecordingIds,
                     onTranscribe = { viewModel.transcribeRecording(rec.id) },
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
@@ -130,7 +209,7 @@ fun RecordingDetailScreen(
                 // AI Response section
                 AiResponseSection(
                     recording = rec,
-                    isProcessing = uiState.processingRecordingId == rec.id,
+                    isProcessing = rec.id in uiState.processingRecordingIds,
                     onAnalyze = { viewModel.analyzeWithAi(rec.id) },
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
@@ -205,6 +284,7 @@ fun RecordingDetailScreen(
 private fun PlayerCard(
     recording: RecordingEntity,
     isPlaying: Boolean,
+    isPreparing: Boolean,
     formatDuration: (Long) -> String,
     onPlayPause: () -> Unit,
     modifier: Modifier = Modifier
@@ -259,13 +339,17 @@ private fun PlayerCard(
             FilledIconButton(
                 onClick = onPlayPause,
                 modifier = Modifier.size(64.dp),
-                enabled = recording.filePath.isNotBlank()
+                enabled = recording.filePath.isNotBlank() && !isPreparing
             ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    modifier = Modifier.size(32.dp)
-                )
+                if (isPreparing) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                } else {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
             }
             
             if (recording.filePath.isBlank()) {

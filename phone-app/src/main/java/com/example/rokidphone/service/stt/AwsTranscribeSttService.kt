@@ -91,8 +91,8 @@ class AwsTranscribeSttService(
      * 按照 AWS Transcribe Streaming WebSocket 文件要求的格式產生
      */
     private fun buildPresignedWebSocketUrl(languageCode: String): String {
-        val host = "transcribestreaming.$region.amazonaws.com"
-        val endpoint = "wss://$host:8443"
+        val host = "transcribestreaming.$region.amazonaws.com:8443"
+        val endpoint = "wss://$host"
         val path = "/stream-transcription-websocket"
 
         val now = Date()

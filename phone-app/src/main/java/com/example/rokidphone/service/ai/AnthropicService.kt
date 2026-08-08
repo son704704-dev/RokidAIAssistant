@@ -286,7 +286,7 @@ class AnthropicService(
             return null
         }
         val content = json.optJSONArray("content")
-        val text = content?.optJSONObject(0)?.optString("text", "")?.trim()
+        val text = firstTextBlock(content)
         if (text.isNullOrEmpty()) return null
 
         addToHistory(userMessage, text)
@@ -351,7 +351,7 @@ class AnthropicService(
                             null
                         }
                         val content = json?.optJSONArray("content")
-                        content?.optJSONObject(0)?.optString("text", "")?.trim()
+                        firstTextBlock(content)
                     } else {
                         if (BuildConfig.DEBUG) {
                             Log.e(TAG, "API error: ${response.code}, body: $responseBody")
@@ -365,5 +365,16 @@ class AnthropicService(
             
             result ?: "Sorry, unable to analyze this image."
         }
+    }
+
+    private fun firstTextBlock(content: JSONArray?): String? {
+        if (content == null) return null
+        for (index in 0 until content.length()) {
+            val block = content.optJSONObject(index) ?: continue
+            if (block.optString("type") == "text") {
+                return block.optString("text").trim().takeIf { it.isNotEmpty() }
+            }
+        }
+        return null
     }
 }

@@ -529,4 +529,5 @@
     <string name="recordings_status_analyzing">Analisi</string>
     <string name="recordings_status_analyzed">Analizzato</string>
     <string name="recordings_status_error">Errore</string>
+    <string name="api_key_not_configured">Chiave API non configurata. Configura una chiave API nelle Impostazioni.</string>
 </resources>

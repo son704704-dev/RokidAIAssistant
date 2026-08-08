@@ -71,6 +71,8 @@ class CxrServiceManager {
     private val cxrBridge: CXRServiceBridge by lazy {
         CXRServiceBridge()
     }
+    @Volatile
+    private var initialized = false
     
     // Connection state listener
     private val statusListener = object : CXRServiceBridge.StatusListener {
@@ -102,10 +104,14 @@ class CxrServiceManager {
             
             // Set state listener
             cxrBridge.setStatusListener(statusListener)
+            initialized = true
             Log.d(TAG, "CxrServiceManager initialized")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize CxrServiceManager", e)
+            false
+        } catch (e: LinkageError) {
+            Log.e(TAG, "CXR-S SDK could not be loaded", e)
             false
         }
     }
@@ -114,6 +120,7 @@ class CxrServiceManager {
      * Subscribe to regular messages
      */
     fun subscribe(channelName: String, callback: (name: String, args: Caps?, data: ByteArray?) -> Unit): Int {
+        if (!initialized) return -1
         onMessageReceived = callback
         
         val msgCallback = CXRServiceBridge.MsgCallback { name, args, value ->
@@ -133,6 +140,7 @@ class CxrServiceManager {
         channelName: String, 
         callback: (name: String, args: Caps?, data: ByteArray?, reply: CXRServiceBridge.Reply?) -> Unit
     ): Int {
+        if (!initialized) return -1
         onMessageWithReply = callback
         
         val replyCallback = CXRServiceBridge.MsgReplyCallback { name, args, value, reply ->
@@ -149,6 +157,7 @@ class CxrServiceManager {
      * Send basic message
      */
     fun sendMessage(channelName: String, args: Caps): Int {
+        if (!initialized) return -1
         val result = cxrBridge.sendMessage(channelName, args)
         Log.d(TAG, "Sent message to $channelName, result: $result")
         return result
@@ -158,6 +167,7 @@ class CxrServiceManager {
      * Send binary message
      */
     fun sendMessage(channelName: String, args: Caps, data: ByteArray): Int {
+        if (!initialized) return -1
         val result = cxrBridge.sendMessage(channelName, args, data, 0, data.size)
         Log.d(TAG, "Sent binary message to $channelName, size: ${data.size}, result: $result")
         return result
@@ -177,6 +187,9 @@ class CxrServiceManager {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send photo", e)
             false
+        } catch (e: LinkageError) {
+            Log.e(TAG, "CXR-S SDK unavailable while sending photo", e)
+            false
         }
     }
     
@@ -193,6 +206,9 @@ class CxrServiceManager {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send status", e)
             false
+        } catch (e: LinkageError) {
+            Log.e(TAG, "CXR-S SDK unavailable while sending status", e)
+            false
         }
     }
     
@@ -202,6 +218,10 @@ class CxrServiceManager {
     fun release() {
         try {
             Log.d(TAG, "Releasing CxrServiceManager")
+            initialized = false
+            onMessageReceived = null
+            onMessageWithReply = null
+            _connectionState.value = ConnectionState.Disconnected
             // SDK will clean up automatically
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing CxrServiceManager", e)

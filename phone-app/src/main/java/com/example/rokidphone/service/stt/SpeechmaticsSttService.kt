@@ -5,6 +5,7 @@ import com.example.rokidphone.service.SpeechErrorCode
 import com.example.rokidphone.service.SpeechResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -13,8 +14,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 /**
@@ -60,10 +60,32 @@ class SpeechmaticsSttService(
                 val wsUrl = WEBSOCKET_URL
                 Log.d(TAG, "WebSocket URL: $wsUrl")
 
-                val result = suspendCancellableCoroutine { continuation ->
-                    val latch = CountDownLatch(1)
-                    var finalTranscript = StringBuilder()
+                val result = withTimeoutOrNull(RECOGNITION_TIMEOUT_SECONDS * 1000L) {
+                    suspendCancellableCoroutine<SpeechResult> { continuation ->
+                    val completed = AtomicBoolean(false)
+                    val finalTranscript = StringBuilder()
                     var error: Exception? = null
+
+                    fun currentResult(): SpeechResult {
+                        val transcript = finalTranscript.toString().trim()
+                        return when {
+                            error != null -> SpeechResult.Error(
+                                message = "Speechmatics error: ${error?.message}",
+                                errorCode = SpeechErrorCode.TRANSCRIPTION_ERROR
+                            )
+                            transcript.isEmpty() -> SpeechResult.Error(
+                                message = "No transcription received",
+                                errorCode = SpeechErrorCode.NO_SPEECH_DETECTED
+                            )
+                            else -> SpeechResult.Success(transcript)
+                        }
+                    }
+
+                    fun finish(result: SpeechResult = currentResult()) {
+                        if (completed.compareAndSet(false, true) && continuation.isActive) {
+                            continuation.resume(result)
+                        }
+                    }
 
                     // Use Authorization: Bearer header for authentication (recommended for non-browser clients)
                     val request = Request.Builder()
@@ -152,7 +174,7 @@ class SpeechmaticsSttService(
                                     "EndOfTranscript" -> {
                                         Log.d(TAG, "End of transcript")
                                         webSocket.close(1000, "Completed")
-                                        latch.countDown()
+                                        finish()
                                     }
                                     "Warning" -> {
                                         val warningType = json.optString("type")
@@ -165,7 +187,7 @@ class SpeechmaticsSttService(
                                         Log.e(TAG, "Speechmatics error: $errorType - $reason")
                                         error = Exception("Speechmatics error: $reason")
                                         webSocket.close(1000, "Error")
-                                        latch.countDown()
+                                        finish()
                                     }
                                     "Info" -> {
                                         val infoType = json.optString("type")
@@ -175,58 +197,34 @@ class SpeechmaticsSttService(
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error parsing message", e)
                                 error = e
+                                webSocket.close(1000, "Parse error")
+                                finish()
                             }
                         }
 
                         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                             Log.d(TAG, "WebSocket closed: $code - $reason")
-                            latch.countDown()
+                            finish()
                         }
 
                         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                             Log.e(TAG, "WebSocket failure", t)
                             error = Exception("WebSocket failure: ${t.message}", t)
-                            latch.countDown()
+                            finish()
                         }
                     }
 
                     val webSocket = client.newWebSocket(request, listener)
 
                     continuation.invokeOnCancellation {
-                        webSocket.close(1000, "Cancelled")
+                        completed.set(true)
+                        webSocket.cancel()
                     }
-
-                    // Wait for completion
-                    val completed = latch.await(RECOGNITION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                    webSocket.close(1000, "Completed")
-
-                    val transcript = finalTranscript.toString().trim()
-
-                    if (!completed) {
-                        continuation.resume(
-                            SpeechResult.Error(
-                                message = "Speechmatics recognition timeout",
-                                errorCode = SpeechErrorCode.TRANSCRIPTION_TIMEOUT
-                            )
-                        )
-                    } else if (error != null) {
-                        continuation.resume(
-                            SpeechResult.Error(
-                                message = "Speechmatics error: ${error?.message}",
-                                errorCode = SpeechErrorCode.TRANSCRIPTION_ERROR
-                            )
-                        )
-                    } else if (transcript.isEmpty()) {
-                        continuation.resume(
-                            SpeechResult.Error(
-                                message = "No transcription received",
-                                errorCode = SpeechErrorCode.NO_SPEECH_DETECTED
-                            )
-                        )
-                    } else {
-                        continuation.resume(SpeechResult.Success(transcript))
                     }
-                }
+                } ?: SpeechResult.Error(
+                    message = "Speechmatics recognition timeout",
+                    errorCode = SpeechErrorCode.TRANSCRIPTION_TIMEOUT
+                )
 
                 result
             } catch (e: Exception) {

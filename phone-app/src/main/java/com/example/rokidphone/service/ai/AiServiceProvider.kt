@@ -29,14 +29,16 @@ interface AiServiceProvider {
     /**
      * Transcribe pre-encoded audio file (e.g. M4A, MP3, OGG)
      * Unlike transcribe() which expects raw PCM data, this accepts encoded audio with its MIME type.
-     * Default implementation falls back to transcribe() (treating data as PCM).
+     * Providers must override this when they support encoded input.
      * @param audioData Encoded audio data
      * @param mimeType MIME type of the audio (e.g. "audio/mp4", "audio/aac")
      * @param languageCode Language code for speech recognition
      * @return Speech recognition result
      */
     suspend fun transcribeAudioFile(audioData: ByteArray, mimeType: String, languageCode: String = "zh-TW"): SpeechResult {
-        return transcribe(audioData, languageCode)
+        throw UnsupportedOperationException(
+            "Encoded audio transcription is not implemented for $mimeType"
+        )
     }
 
     /**

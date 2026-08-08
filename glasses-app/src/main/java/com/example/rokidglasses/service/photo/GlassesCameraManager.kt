@@ -396,6 +396,7 @@ class GlassesCameraManager(private val context: Context) {
             // Use a blocking latch to wait for image
             val latch = java.util.concurrent.CountDownLatch(1)
             var capturedBytes: ByteArray? = null
+            val capturedFromYuv = java.util.concurrent.atomic.AtomicBoolean(false)
             
             // Flag to indicate when we're ready to capture (after preview warm-up)
             // This prevents processing preview frames which causes massive CPU load
@@ -413,6 +414,7 @@ class GlassesCameraManager(private val context: Context) {
                                 // Check if it's YUV or JPEG format
                                 if (image.format == ImageFormat.YUV_420_888) {
                                     // Convert YUV to JPEG
+                                    capturedFromYuv.set(true)
                                     capturedBytes = yuvToJpeg(image)
                                     Log.d(TAG, "Captured YUV image, converted to JPEG: ${capturedBytes?.size ?: 0} bytes")
                                 } else {
@@ -449,10 +451,13 @@ class GlassesCameraManager(private val context: Context) {
             session.setRepeatingRequest(previewBuilder.build(), null, backgroundHandler)
             delay(1500)  // Wait 1.5 seconds for AE/AF to stabilize
             session.stopRepeating()
-            
-            // Now we're ready to capture - set the flag
-            readyToCapture.set(true)
-            Log.d(TAG, "Preview warm-up complete, ready to capture")
+            // Discard any preview frames queued before the still request.
+            while (true) {
+                val staleImage = imageReader.acquireLatestImage() ?: break
+                staleImage.close()
+            }
+            readyToCapture.set(false)
+            Log.d(TAG, "Preview warm-up complete")
             
             // Now do the actual capture
             Log.d(TAG, "Starting still capture...")
@@ -487,6 +492,15 @@ class GlassesCameraManager(private val context: Context) {
             
             // Execute capture
             session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureStarted(
+                    session: CameraCaptureSession,
+                    request: CaptureRequest,
+                    timestamp: Long,
+                    frameNumber: Long
+                ) {
+                    readyToCapture.set(true)
+                }
+
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession,
                     request: CaptureRequest,
@@ -514,7 +528,12 @@ class GlassesCameraManager(private val context: Context) {
             
             if (received && capturedBytes != null) {
                 Log.d(TAG, "Capture successful: ${capturedBytes!!.size} bytes")
-                normalizeOrientation(capturedBytes!!)
+                val bytes = capturedBytes!!
+                if (capturedFromYuv.get() && sensorOrientation % 360 != 0) {
+                    ImageCompressor.rotateImage(bytes, ((sensorOrientation % 360) + 360) % 360)
+                } else {
+                    normalizeOrientation(bytes)
+                }
             } else {
                 Log.e(TAG, "Capture timed out or failed to receive image")
                 null
@@ -564,22 +583,34 @@ class GlassesCameraManager(private val context: Context) {
      */
     private fun yuvToJpeg(image: Image): ByteArray? {
         try {
-            val yBuffer = image.planes[0].buffer
-            val uBuffer = image.planes[1].buffer
-            val vBuffer = image.planes[2].buffer
-            
-            val ySize = yBuffer.remaining()
-            val uSize = uBuffer.remaining()
-            val vSize = vBuffer.remaining()
-            
-            val nv21 = ByteArray(ySize + uSize + vSize)
-            
-            // Copy Y plane
-            yBuffer.get(nv21, 0, ySize)
-            
-            // Copy VU planes (NV21 format: VU interleaved)
-            vBuffer.get(nv21, ySize, vSize)
-            uBuffer.get(nv21, ySize + vSize, uSize)
+            val width = image.width
+            val height = image.height
+            val chromaWidth = width / 2
+            val chromaHeight = height / 2
+            val nv21 = ByteArray(width * height + chromaWidth * chromaHeight * 2)
+
+            val yPlane = image.planes[0]
+            val yBuffer = yPlane.buffer.duplicate()
+            var outputOffset = 0
+            for (row in 0 until height) {
+                val rowStart = row * yPlane.rowStride
+                for (column in 0 until width) {
+                    nv21[outputOffset++] = yBuffer.get(rowStart + column * yPlane.pixelStride)
+                }
+            }
+
+            val uPlane = image.planes[1]
+            val vPlane = image.planes[2]
+            val uBuffer = uPlane.buffer.duplicate()
+            val vBuffer = vPlane.buffer.duplicate()
+            for (row in 0 until chromaHeight) {
+                val uRowStart = row * uPlane.rowStride
+                val vRowStart = row * vPlane.rowStride
+                for (column in 0 until chromaWidth) {
+                    nv21[outputOffset++] = vBuffer.get(vRowStart + column * vPlane.pixelStride)
+                    nv21[outputOffset++] = uBuffer.get(uRowStart + column * uPlane.pixelStride)
+                }
+            }
             
             // Create YuvImage and compress to JPEG
             val yuvImage = android.graphics.YuvImage(

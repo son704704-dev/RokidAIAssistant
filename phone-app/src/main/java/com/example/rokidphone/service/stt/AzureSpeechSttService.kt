@@ -5,6 +5,8 @@ import com.example.rokidphone.service.SpeechErrorCode
 import com.example.rokidphone.service.SpeechResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -33,8 +35,10 @@ class AzureSpeechSttService(
     
     override val provider = SttProvider.AZURE_SPEECH
     
-    private val endpoint: String
-        get() = baseEndpoint ?: "https://$region.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1"
+    private val endpoint: HttpUrl
+        get() = secureEndpoint(
+            baseEndpoint ?: "https://$region.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1"
+        )
     
     override suspend fun transcribe(audioData: ByteArray, languageCode: String): SpeechResult {
         return withContext(Dispatchers.IO) {
@@ -52,29 +56,46 @@ class AzureSpeechSttService(
             // Map language code to Azure format
             val azureLanguage = mapLanguageCode(languageCode)
             
-            val url = "$endpoint?language=$azureLanguage&format=detailed"
+            val url = endpoint.newBuilder()
+                .addQueryParameter("language", azureLanguage)
+                .addQueryParameter("format", "detailed")
+                .build()
             
-            val result = executeWithRetry(TAG) { attempt ->
-                Log.d(TAG, "Sending Azure Speech request (attempt $attempt)")
+            val result = try {
+                executeWithRetry(TAG) { attempt ->
+                    Log.d(TAG, "Sending Azure Speech request (attempt $attempt)")
                 
-                val request = Request.Builder()
-                    .url(url)
-                    .addHeader("Ocp-Apim-Subscription-Key", subscriptionKey)
-                    .addHeader("Content-Type", "audio/wav; codecs=audio/pcm; samplerate=16000")
-                    .addHeader("Accept", "application/json")
-                    .post(wavData.toRequestBody("audio/wav".toMediaType()))
-                    .build()
+                    val request = Request.Builder()
+                        .url(url)
+                        .addHeader("Ocp-Apim-Subscription-Key", subscriptionKey)
+                        .addHeader("Content-Type", "audio/wav; codecs=audio/pcm; samplerate=16000")
+                        .addHeader("Accept", "application/json")
+                        .post(wavData.toRequestBody("audio/wav".toMediaType()))
+                        .build()
                 
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string()
+                    client.newCall(request).execute().use { response ->
+                        val responseBody = response.body?.string()
                     
-                    if (response.isSuccessful && responseBody != null) {
-                        parseTranscript(responseBody)
-                    } else {
-                        Log.e(TAG, "API error: ${response.code}, body: $responseBody")
-                        null
+                        if (response.isSuccessful && responseBody != null) {
+                            parseTranscript(responseBody)
+                        } else {
+                            Log.e(TAG, "Azure Speech API error: HTTP ${response.code}")
+                            if (response.code in 400..499 && response.code !in setOf(408, 429)) {
+                                throw NonRetryableSttException(
+                                    response.code,
+                                    "Azure Speech rejected the request (HTTP ${response.code})"
+                                )
+                            }
+                            null
+                        }
                     }
                 }
+            } catch (e: NonRetryableSttException) {
+                return@withContext SpeechResult.Error(
+                    message = e.message ?: "Azure Speech rejected the request",
+                    errorCode = SpeechErrorCode.TRANSCRIPTION_ERROR,
+                    errorDetail = "HTTP ${e.statusCode}"
+                )
             }
             
             if (result != null) {
@@ -121,7 +142,7 @@ class AzureSpeechSttService(
                     val best = nBest.getJSONObject(0)
                     val display = best.optString("Display", "").trim()
                     if (display.isNotEmpty()) {
-                        Log.d(TAG, "Transcription: $display")
+                        Log.d(TAG, "Azure transcription completed (${display.length} characters)")
                         return display
                     }
                 }
@@ -129,7 +150,7 @@ class AzureSpeechSttService(
                 // Fallback to DisplayText
                 val displayText = json.optString("DisplayText", "").trim()
                 if (displayText.isNotEmpty()) {
-                    Log.d(TAG, "Transcription: $displayText")
+                    Log.d(TAG, "Azure transcription completed (${displayText.length} characters)")
                     displayText
                 } else {
                     null
@@ -150,7 +171,9 @@ class AzureSpeechSttService(
                 // Send a minimal audio request to validate credentials
                 // Azure doesn't have a simple health check endpoint that validates the key
                 // So we'll use the token endpoint to validate
-                val tokenUrl = baseTokenEndpoint ?: "https://$region.api.cognitive.microsoft.com/sts/v1.0/issueToken"
+                val tokenUrl = secureEndpoint(
+                    baseTokenEndpoint ?: "https://$region.api.cognitive.microsoft.com/sts/v1.0/issueToken"
+                )
                 
                 val request = Request.Builder()
                     .url(tokenUrl)
@@ -175,5 +198,13 @@ class AzureSpeechSttService(
                 SttValidationResult.Invalid(SttValidationError.UNKNOWN)
             }
         }
+    }
+
+    private fun secureEndpoint(value: String): HttpUrl {
+        val url = value.toHttpUrl()
+        require(url.isHttps || url.host == "localhost" || url.host == "127.0.0.1") {
+            "Azure Speech endpoints must use HTTPS"
+        }
+        return url
     }
 }

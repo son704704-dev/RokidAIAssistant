@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -57,6 +59,7 @@ class BluetoothSppManager(
         private val APP_UUID: UUID = UUID.fromString("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
         
         private const val BUFFER_SIZE = 8192
+        private const val MAX_VOICE_BYTES = 16 * 1024 * 1024
         
         // JSON message terminator on the text channel
         private const val NEWLINE_BYTE: Byte = 0x0A // '\n'
@@ -88,6 +91,7 @@ class BluetoothSppManager(
     
     private var acceptJob: Job? = null
     private var readJob: Job? = null
+    private val writeMutex = Mutex()
     
     // Connection state
     private val _connectionState = MutableStateFlow(BluetoothConnectionState.DISCONNECTED)
@@ -107,9 +111,13 @@ class BluetoothSppManager(
 
     // Audio buffer - collect fragmented audio data
     private val audioBuffer = mutableListOf<ByteArray>()
+    private var audioBufferBytes = 0
+    private var audioOverflowed = false
     
     // Photo receiver for handling chunked photo transfer
-    private val photoReceiver = BluetoothPhotoReceiver(scope)
+    private val photoReceiver = BluetoothPhotoReceiver(scope) { packet ->
+        writeBytes(packet)
+    }
     
     // Photo transfer state
     val photoTransferState: StateFlow<PhotoTransferState> = photoReceiver.transferState
@@ -287,29 +295,48 @@ class BluetoothSppManager(
             return
         }
         
+        // A server accept and a client connect must never race to install their sockets.
+        stopListening()
         disconnect(restartListening = false)
         
         scope.launch(Dispatchers.IO) {
+            var socket: BluetoothSocket? = null
+            var connectionEstablished = false
             try {
                 _connectionState.value = BluetoothConnectionState.CONNECTING
                 Log.d(TAG, "Connecting to: ${device.name}")
                 
-                val socket = device.createRfcommSocketToServiceRecord(APP_UUID)
+                val newSocket = device.createRfcommSocketToServiceRecord(APP_UUID)
+                socket = newSocket
                 
                 // Cancel discovery to speed up connection
                 bluetoothAdapter?.cancelDiscovery()
                 
-                socket.connect()
+                newSocket.connect()
                 
                 Log.d(TAG, "Connected to: ${device.name}")
-                handleConnection(socket)
+                handleConnection(newSocket)
+                connectionEstablished = true
                 
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: SecurityException) {
                 Log.e(TAG, "Security exception", e)
                 _connectionState.value = BluetoothConnectionState.DISCONNECTED
             } catch (e: IOException) {
                 Log.e(TAG, "Connection failed", e)
                 _connectionState.value = BluetoothConnectionState.DISCONNECTED
+            } finally {
+                if (!connectionEstablished) {
+                    try {
+                        socket?.close()
+                    } catch (e: IOException) {
+                        Log.w(TAG, "Failed to close unsuccessful client socket", e)
+                    }
+                    if (isActive) {
+                        startListening()
+                    }
+                }
             }
         }
     }
@@ -318,9 +345,6 @@ class BluetoothSppManager(
         clientSocket = socket
         inputStream = socket.inputStream
         outputStream = socket.outputStream
-        
-        // Set output stream for photo receiver (for ACK/RETRY responses)
-        photoReceiver.setOutputStream(outputStream)
         
         try {
             _connectedDevice = socket.remoteDevice
@@ -507,14 +531,37 @@ class BluetoothSppManager(
                             }
                             MessageType.VOICE_START -> {
                                 audioBuffer.clear()
+                                audioBufferBytes = 0
+                                audioOverflowed = false
                                 Log.d(TAG, "Voice recording started")
                                 // Emit to flow so service/UI can be notified
                                 _messageFlow.emit(message)
                             }
                             MessageType.VOICE_DATA -> {
-                                message.binaryData?.let { audioBuffer.add(it) }
+                                message.binaryData?.let { chunk ->
+                                    if (!audioOverflowed && audioBufferBytes <= MAX_VOICE_BYTES - chunk.size) {
+                                        audioBuffer.add(chunk)
+                                        audioBufferBytes += chunk.size
+                                    } else if (!audioOverflowed) {
+                                        audioBuffer.clear()
+                                        audioBufferBytes = 0
+                                        audioOverflowed = true
+                                        val error = Message(
+                                            type = MessageType.SYSTEM_ERROR,
+                                            payload = "Voice recording exceeded the size limit"
+                                        )
+                                        _messageFlow.emit(error)
+                                        sendMessage(error)
+                                    }
+                                }
                             }
                             MessageType.VOICE_END -> {
+                                if (audioOverflowed) {
+                                    audioBuffer.clear()
+                                    audioBufferBytes = 0
+                                    audioOverflowed = false
+                                    continue
+                                }
                                 // Check if VOICE_END message contains audio data directly
                                 val messageBinaryData = message.binaryData
                                 val fullAudio = if (messageBinaryData != null && messageBinaryData.isNotEmpty()) {
@@ -528,6 +575,7 @@ class BluetoothSppManager(
                                         .toByteArray()
                                 }
                                 audioBuffer.clear()
+                                audioBufferBytes = 0
                                 Log.d(TAG, "Voice recording ended, total: ${fullAudio.size} bytes")
                                 
                                 _messageFlow.emit(Message(
@@ -587,29 +635,26 @@ class BluetoothSppManager(
      * Send message
      */
     suspend fun sendMessage(message: Message): Boolean {
-        return withContext(Dispatchers.IO) {
+        val json = message.toJson() + "\n"
+        val sent = writeBytes(json.toByteArray(Charsets.UTF_8))
+        if (sent) {
+            Log.d(TAG, "Sent message: ${message.type}")
+        }
+        return sent
+    }
+
+    /** Serializes every write, including photo ACK/RETRY packets, on the RFCOMM stream. */
+    private suspend fun writeBytes(bytes: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        writeMutex.withLock {
+            if (_connectionState.value != BluetoothConnectionState.CONNECTED) {
+                Log.w(TAG, "Not connected, cannot send data")
+                return@withLock false
+            }
+
             try {
-                if (_connectionState.value != BluetoothConnectionState.CONNECTED) {
-                    Log.w(TAG, "Not connected, cannot send message")
-                    return@withContext false
-                }
-                
-                val json = message.toJson() + "\n"
-                
-                // Capture the stream into a local (a concurrent disconnect can
-                // null the field between calls) and serialise the write: the
-                // photo receiver writes ACK/RETRY frames to the same stream.
-                val stream = outputStream
-                if (stream == null) {
-                    Log.w(TAG, "Output stream unavailable, cannot send message")
-                    return@withContext false
-                }
-                synchronized(writeLock) {
-                    stream.write(json.toByteArray(Charsets.UTF_8))
-                    stream.flush()
-                }
-                
-                Log.d(TAG, "Sent message: ${message.type}")
+                val stream = outputStream ?: return@withLock false
+                stream.write(bytes)
+                stream.flush()
                 true
             } catch (e: IOException) {
                 Log.e(TAG, "Send failed", e)
@@ -650,7 +695,7 @@ class BluetoothSppManager(
         Log.d(TAG, "Handling disconnection from read thread...")
         
         // Reset photo receiver
-        photoReceiver.setOutputStream(null)
+        photoReceiver.reset()
         binaryBuffer.reset()
         parsingBinaryPacket = false
         expectedPacketLength = 0
@@ -673,6 +718,8 @@ class BluetoothSppManager(
         _connectedDeviceName.value = null
         
         audioBuffer.clear()
+        audioBufferBytes = 0
+        audioOverflowed = false
         
         // Reset the flag - the acceptJob loop will automatically accept new connections
         // after readJob completes (readJob?.join() in startListening)
@@ -713,7 +760,7 @@ class BluetoothSppManager(
         readJob = null
         
         // Reset photo receiver
-        photoReceiver.setOutputStream(null)
+        photoReceiver.reset()
         binaryBuffer.reset()
         parsingBinaryPacket = false
         expectedPacketLength = 0
@@ -735,6 +782,8 @@ class BluetoothSppManager(
         _connectedDeviceName.value = null
         
         audioBuffer.clear()
+        audioBufferBytes = 0
+        audioOverflowed = false
         
         // Stop old server socket and restart listening with delay
         // Reset flag only AFTER restart completes to prevent race conditions

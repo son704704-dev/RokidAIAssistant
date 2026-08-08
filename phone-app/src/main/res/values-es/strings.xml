@@ -527,4 +527,5 @@
     <string name="recordings_status_analyzing">Analizando</string>
     <string name="recordings_status_analyzed">Analizado</string>
     <string name="recordings_status_error">Error</string>
+    <string name="api_key_not_configured">La clave de API no está configurada. Configura una clave de API en Ajustes.</string>
 </resources>

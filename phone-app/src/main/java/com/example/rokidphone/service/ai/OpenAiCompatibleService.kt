@@ -6,6 +6,7 @@ import com.example.rokidphone.ai.catalog.ProviderApiException
 import com.example.rokidphone.ai.catalog.ProviderErrorKind
 import com.example.rokidphone.data.AiProvider
 import com.example.rokidphone.service.SpeechResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -158,59 +159,90 @@ open class OpenAiCompatibleService(
         }
     }
 
+    override suspend fun transcribeAudioFile(
+        audioData: ByteArray,
+        mimeType: String,
+        languageCode: String
+    ): SpeechResult = withContext(Dispatchers.IO) {
+        val sttPolicy = policy
+        val transcriptionModel = sttPolicy.transcriptionModel
+        if (!sttPolicy.supportsAudioTranscriptions || transcriptionModel == null) {
+            return@withContext SpeechResult.Error(
+                "$providerType does not support encoded audio transcription via this endpoint"
+            )
+        }
+        val extension = when (mimeType.lowercase()) {
+            "audio/mp4", "audio/m4a" -> "m4a"
+            "audio/mpeg", "audio/mp3" -> "mp3"
+            "audio/ogg" -> "ogg"
+            "audio/webm" -> "webm"
+            "audio/wav", "audio/x-wav" -> "wav"
+            else -> return@withContext SpeechResult.Error("Unsupported audio format: $mimeType")
+        }
+        transcribeAudio(
+            audioData = audioData,
+            languageCode = languageCode,
+            transcriptionModel = transcriptionModel,
+            fileName = "audio.$extension",
+            mimeType = mimeType
+        )
+    }
+
     private suspend fun transcribeWithWhisper(
         pcmAudioData: ByteArray,
         languageCode: String,
         transcriptionModel: String
+    ): SpeechResult = transcribeAudio(
+        audioData = pcmToWav(pcmAudioData),
+        languageCode = languageCode,
+        transcriptionModel = transcriptionModel,
+        fileName = "audio.wav",
+        mimeType = "audio/wav"
+    )
+
+    private suspend fun transcribeAudio(
+        audioData: ByteArray,
+        languageCode: String,
+        transcriptionModel: String,
+        fileName: String,
+        mimeType: String
     ): SpeechResult {
-        return withContext(Dispatchers.IO) {
-            Log.d(TAG, "Starting transcription, audio size: ${pcmAudioData.size} bytes")
+        if (audioData.size < 1000) return SpeechResult.Error("Audio too short, please try again")
+        Log.d(TAG, "Starting transcription, audio size: ${audioData.size} bytes")
+        val boundary = "----RokidBoundary${System.currentTimeMillis()}"
+        val requestBody = buildMultipartBody(
+            boundary,
+            audioData,
+            languageCode,
+            transcriptionModel,
+            fileName,
+            mimeType
+        )
+        val authHeader = buildAuthHeader()
+        val requestBuilder = Request.Builder()
+            .url(buildUrl("audio/transcriptions"))
+            .addHeader("Content-Type", "multipart/form-data; boundary=$boundary")
+            .post(requestBody.toRequestBody("multipart/form-data; boundary=$boundary".toMediaType()))
+        if (authHeader.first.isNotBlank()) requestBuilder.addHeader(authHeader.first, authHeader.second)
 
-            if (pcmAudioData.size < 1000) {
-                return@withContext SpeechResult.Error("Audio too short, please try again")
-            }
-
-            val wavData = pcmToWav(pcmAudioData)
-            val boundary = "----WebKitFormBoundary${System.currentTimeMillis()}"
-            val requestBody = buildMultipartBody(boundary, wavData, languageCode, transcriptionModel)
-
-            val url = buildUrl("audio/transcriptions")
-            val authHeader = buildAuthHeader()
-
-            try {
-                val requestBuilder = Request.Builder()
-                    .url(url)
-                    .addHeader("Content-Type", "multipart/form-data; boundary=$boundary")
-                    .post(requestBody.toRequestBody("multipart/form-data; boundary=$boundary".toMediaType()))
-
-                if (authHeader.first.isNotBlank()) {
-                    requestBuilder.addHeader(authHeader.first, authHeader.second)
+        return try {
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                val body = response.body?.string()
+                if (response.isSuccessful && body != null) {
+                    JSONObject(body).optString("text").trim().takeIf { it.isNotEmpty() }
+                        ?.let { SpeechResult.Success(it) }
+                        ?: SpeechResult.Error("No speech detected")
+                } else {
+                    val error = ProviderApiException.fromHttpStatus(response.code, body)
+                    Log.e(TAG, "Transcription API error: ${error.kind}")
+                    SpeechResult.Error("Speech recognition failed: ${error.message}")
                 }
-
-                client.newCall(requestBuilder.build()).execute().use { response ->
-                    val responseBody = response.body?.string()
-
-                    if (response.isSuccessful && responseBody != null) {
-                        val json = JSONObject(responseBody)
-                        val text = json.optString("text", "").trim()
-
-                        if (text.isEmpty()) {
-                            Log.w(TAG, "Empty transcription result")
-                            SpeechResult.Error("No speech detected")
-                        } else {
-                            Log.d(TAG, "Transcription: $text")
-                            SpeechResult.Success(text)
-                        }
-                    } else {
-                        val error = ProviderApiException.fromHttpStatus(response.code, responseBody)
-                        Log.e(TAG, "Transcription API error: ${error.kind}")
-                        SpeechResult.Error("Speech recognition failed: ${error.message}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Transcription error", e)
-                SpeechResult.Error("Speech recognition error: ${ProviderApiException.sanitize(e.message)}")
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Transcription error", e)
+            SpeechResult.Error("Speech recognition error: ${ProviderApiException.sanitize(e.message)}")
         }
     }
 
@@ -218,7 +250,9 @@ open class OpenAiCompatibleService(
         boundary: String,
         wavData: ByteArray,
         languageCode: String,
-        transcriptionModel: String
+        transcriptionModel: String,
+        fileName: String,
+        mimeType: String
     ): ByteArray {
         val output = java.io.ByteArrayOutputStream()
         val writer = output.bufferedWriter()
@@ -226,8 +260,8 @@ open class OpenAiCompatibleService(
 
         // file field
         writer.write("--$boundary\r\n")
-        writer.write("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
-        writer.write("Content-Type: audio/wav\r\n\r\n")
+        writer.write("Content-Disposition: form-data; name=\"file\"; filename=\"$fileName\"\r\n")
+        writer.write("Content-Type: $mimeType\r\n\r\n")
         writer.flush()
         output.write(wavData)
         writer.write("\r\n")

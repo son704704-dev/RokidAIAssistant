@@ -138,6 +138,11 @@ class TencentSttService(
                                 // Check for final message
                                 val isFinalMessage = json.optInt("final", 0) == 1
                                 if (isFinalMessage) {
+                                    val result = json.optJSONObject("result")
+                                    val voiceTextStr = result?.optString("voice_text_str")
+                                    if (!voiceTextStr.isNullOrEmpty()) {
+                                        resultText = voiceTextStr
+                                    }
                                     Log.d(TAG, "Received final message")
                                     webSocket.close(1000, "Done")
                                     return

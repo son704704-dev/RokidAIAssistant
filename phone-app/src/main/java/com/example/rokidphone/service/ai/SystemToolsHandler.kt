@@ -67,20 +67,24 @@ class SystemToolsHandler(
             args.optString("contactName").ifBlank { "" }
         }
 
-        val resolvedNumber = when {
-            phoneNumber.isNotBlank() -> sanitizePhoneNumber(phoneNumber)
-            contactName.isNotBlank() -> resolvePhoneNumberByContactName(contactName)
-            else -> null
-        }
-
-        if (resolvedNumber.isNullOrBlank()) {
-            return@withContext ToolResult.failure(
-                call.id,
-                "No valid phone number found. Provide phone_number or a resolvable contact_name."
-            )
-        }
-
         return@withContext try {
+            val resolvedNumber = when {
+                phoneNumber.isNotBlank() -> sanitizePhoneNumber(phoneNumber)
+                contactName.isNotBlank() -> resolvePhoneNumberByContactName(contactName)
+                else -> null
+            }
+
+            if (resolvedNumber.isNullOrBlank()) {
+                return@withContext ToolResult.failure(
+                    call.id,
+                    if (contactName.isNotBlank() && !hasPermission(Manifest.permission.READ_CONTACTS)) {
+                        "Contacts permission is required to resolve contact_name."
+                    } else {
+                        "No valid phone number found. Provide phone_number or a resolvable contact_name."
+                    }
+                )
+            }
+
             val dialIntent = Intent(Intent.ACTION_DIAL).apply {
                 data = Uri.parse("tel:$resolvedNumber")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

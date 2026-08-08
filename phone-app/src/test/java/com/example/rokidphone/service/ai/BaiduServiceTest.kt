@@ -80,9 +80,11 @@ class BaiduServiceTest {
 
         // Verify token request
         val tokenRequest = mockServer.server.takeRequest()
-        assertThat(tokenRequest.path).contains("grant_type=client_credentials")
-        assertThat(tokenRequest.path).contains("client_id=test-api-key")
-        assertThat(tokenRequest.path).contains("client_secret=test-secret-key")
+        assertThat(tokenRequest.path).doesNotContain("client_secret")
+        val tokenBody = tokenRequest.body.readUtf8()
+        assertThat(tokenBody).contains("grant_type=client_credentials")
+        assertThat(tokenBody).contains("client_id=test-api-key")
+        assertThat(tokenBody).contains("client_secret=test-secret-key")
 
         // Verify chat request
         val chatRequest = mockServer.server.takeRequest()

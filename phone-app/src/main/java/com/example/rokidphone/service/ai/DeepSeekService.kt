@@ -1,6 +1,7 @@
 package com.example.rokidphone.service.ai
 
 import com.example.rokidphone.data.AiProvider
+import com.example.rokidphone.data.AIModel
 import org.json.JSONObject
 
 /**
@@ -50,6 +51,7 @@ class DeepSeekService(
         private set
 
     override fun postProcessRequestJson(json: JSONObject) {
+        lastReasoningContent = null
         if (isReasonerModel(modelId)) {
             // DeepSeek reasoner/speciale reject `temperature` (and related
             // sampling params) — strip anything that might have been set.

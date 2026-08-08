@@ -87,7 +87,7 @@ class SttServiceFactoryTest {
         // 測試：所有 SttProvider 都有 factory 分支且可建立
         val settings = fullyConfiguredApiSettings()
 
-        for (provider in SttProvider.entries) {
+        for (provider in SttProvider.entries - SttProvider.HUAWEI_SIS) {
             val service = SttServiceFactory.createService(
                 sttCredentials = fullyConfiguredCredentials(provider),
                 apiSettings = settings
@@ -95,19 +95,25 @@ class SttServiceFactoryTest {
             assertThat(service).isNotNull()
             assertThat(service!!.provider).isEqualTo(provider)
         }
+
+        assertThat(
+            SttServiceFactory.createService(
+                sttCredentials = fullyConfiguredCredentials(SttProvider.HUAWEI_SIS),
+                apiSettings = settings
+            )
+        ).isNull()
     }
 
     @Test
-    fun `getImplementedProviders returns all 18 providers`() {
+    fun `getImplementedProviders excludes providers without working authentication`() {
         // 測試：已實作 STT provider 數量應為 18
         val implemented = SttServiceFactory.getImplementedProviders()
-        assertThat(implemented.size).isEqualTo(18)
-        assertThat(implemented).containsAtLeastElementsIn(SttProvider.entries)
+        assertThat(implemented).containsExactlyElementsIn(SttProvider.entries - SttProvider.HUAWEI_SIS)
     }
 
     @Test
-    fun `getPlannedProviders returns empty list`() {
+    fun `getPlannedProviders returns providers without working authentication`() {
         // 測試：目前無未實作 provider
-        assertThat(SttServiceFactory.getPlannedProviders()).isEmpty()
+        assertThat(SttServiceFactory.getPlannedProviders()).containsExactly(SttProvider.HUAWEI_SIS)
     }
 }

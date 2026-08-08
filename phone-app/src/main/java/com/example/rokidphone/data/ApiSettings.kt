@@ -9,7 +9,7 @@ import com.example.rokidphone.service.stt.SttProvider
  * AI Service Providers
  */
 enum class AiProvider(
-    @StringRes val displayNameResId: Int,
+    @param:StringRes val displayNameResId: Int,
     val description: String,
     val website: String,
     val defaultBaseUrl: String,
@@ -610,7 +610,7 @@ data class ApiSettings(
      * Check if any speech recognition service is available
      */
     fun hasSpeechServiceConfigured(): Boolean {
-        return SPEECH_CAPABLE_STT_PROVIDERS.any { isProviderConfigured(it) }
+        return hasSelectedSttCredentials()
     }
 
     /**
@@ -695,6 +695,7 @@ fun ApiSettings.validateForChat(): SettingsValidationResult {
         // reported later by LocalGemmaService, not as a missing-key error.
         aiProvider == AiProvider.LOCAL_GEMMA ->
             SettingsValidationResult.Valid
+        aiProvider == AiProvider.CUSTOM -> SettingsValidationResult.Valid
         getCurrentApiKey().isBlank() ->
             SettingsValidationResult.MissingApiKey(aiProvider)
         else -> SettingsValidationResult.Valid
@@ -705,13 +706,30 @@ fun ApiSettings.validateForChat(): SettingsValidationResult {
  * Validate settings for speech recognition
  */
 fun ApiSettings.validateForSpeech(): SettingsValidationResult {
-    val configuredStt = SPEECH_CAPABLE_STT_PROVIDERS.filter { isProviderConfigured(it) }
-
-    return if (configuredStt.isEmpty()) {
-        SettingsValidationResult.MissingSpeechService(SPEECH_CAPABLE_STT_PROVIDERS)
-    } else {
-        SettingsValidationResult.Valid
+    if (hasSelectedSttCredentials()) {
+        return SettingsValidationResult.Valid
     }
+
+    val builtInProvider = when (sttProvider) {
+        SttProvider.GEMINI -> AiProvider.GEMINI
+        SttProvider.OPENAI_WHISPER -> AiProvider.OPENAI
+        SttProvider.GROQ_WHISPER -> AiProvider.GROQ
+        else -> null
+    }
+    return if (builtInProvider != null) {
+        SettingsValidationResult.MissingSpeechService(listOf(builtInProvider))
+    } else {
+        SettingsValidationResult.InvalidConfiguration(
+            "Missing credentials for the selected speech provider: ${sttProvider.name}"
+        )
+    }
+}
+
+private fun ApiSettings.hasSelectedSttCredentials(): Boolean = when (sttProvider) {
+    SttProvider.GEMINI -> geminiApiKey.isNotBlank()
+    SttProvider.OPENAI_WHISPER -> openaiApiKey.isNotBlank()
+    SttProvider.GROQ_WHISPER -> groqApiKey.isNotBlank()
+    else -> toSttCredentials().hasCredentialsForProvider(sttProvider)
 }
 
 /**

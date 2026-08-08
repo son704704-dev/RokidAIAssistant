@@ -59,8 +59,15 @@ class BaiduSttService(
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
                         val json = JSONObject(response.body?.string() ?: "")
-                        accessToken = json.optString("access_token")
-                        val expiresIn = json.optInt("expires_in", 2592000) // 30 days default
+                        val token = json.optString("access_token")
+                        if (token.isBlank()) {
+                            Log.e(TAG, "Token response missing access_token")
+                            accessToken = null
+                            tokenExpireTime = 0
+                            return@use null
+                        }
+                        accessToken = token
+                        val expiresIn = json.optInt("expires_in").coerceAtLeast(1)
                         tokenExpireTime = System.currentTimeMillis() + (expiresIn * 1000L)
                         accessToken
                     } else {

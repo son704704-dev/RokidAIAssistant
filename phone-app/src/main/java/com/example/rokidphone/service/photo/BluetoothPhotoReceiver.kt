@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.io.OutputStream
 
 /**
  * Bluetooth Photo Receiver
@@ -26,7 +25,8 @@ import java.io.OutputStream
  * @param scope CoroutineScope for async operations
  */
 class BluetoothPhotoReceiver(
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val sendPacket: suspend (ByteArray) -> Boolean
 ) {
     companion object {
         private const val TAG = "BluetoothPhotoReceiver"
@@ -48,21 +48,8 @@ class BluetoothPhotoReceiver(
     
     // Transfer session data
     private var currentSession: TransferSession? = null
-    private var timeoutJob: Job? = null
-    
-    // Output stream for sending ACK/RETRY (set by BluetoothSppManager)
-    private var outputStream: OutputStream? = null
-    
-    /**
-     * Sets the output stream for sending responses.
-     */
-    fun setOutputStream(stream: OutputStream?) {
-        outputStream = stream
-        if (stream == null) {
-            // Connection lost, reset state
-            reset()
-        }
-    }
+    private var transferTimeoutJob: Job? = null
+    private var chunkTimeoutJob: Job? = null
     
     /**
      * Processes a received photo packet.
@@ -104,7 +91,7 @@ class BluetoothPhotoReceiver(
             // Check for existing session
             if (currentSession != null) {
                 Log.w(TAG, "Aborting previous incomplete transfer")
-                reset()
+                cleanupSession()
             }
             
             // Validate parameters
@@ -126,6 +113,7 @@ class BluetoothPhotoReceiver(
                 totalChunks = startData.totalChunks,
                 expectedMd5 = startData.md5,
                 receivedChunks = mutableMapOf(),
+                receivedBytes = 0,
                 startTime = System.currentTimeMillis()
             )
             
@@ -180,15 +168,13 @@ class BluetoothPhotoReceiver(
                 return
             }
             
-            // Store chunk
-            session.receivedChunks[dataPacket.chunkIndex] = dataPacket.payload
-            
-            // Update progress
-            val bytesReceived = session.receivedChunks.values.sumOf { it.size }.toLong()
+            // Store the chunk and update progress without repeatedly summing all prior chunks.
+            val previousChunk = session.receivedChunks.put(dataPacket.chunkIndex, dataPacket.payload)
+            session.receivedBytes += dataPacket.payload.size - (previousChunk?.size ?: 0)
             _transferState.value = PhotoTransferState.InProgress(
                 currentChunk = session.receivedChunks.size,
                 totalChunks = session.totalChunks,
-                bytesTransferred = bytesReceived,
+                bytesTransferred = session.receivedBytes.toLong(),
                 totalBytes = session.totalSize.toLong()
             )
             
@@ -218,7 +204,7 @@ class BluetoothPhotoReceiver(
             Log.d(TAG, "Received END: status=${PacketUtils.getStatusName(status)}")
             
             // Cancel timeout
-            timeoutJob?.cancel()
+            chunkTimeoutJob?.cancel()
             
             if (status != PhotoTransferConstants.STATUS_SUCCESS) {
                 Log.e(TAG, "Sender reported error: ${PacketUtils.getStatusName(status)}")
@@ -226,7 +212,7 @@ class BluetoothPhotoReceiver(
                     "Sender reported error",
                     status
                 )
-                reset()
+                cleanupSession()
                 return
             }
             
@@ -238,6 +224,7 @@ class BluetoothPhotoReceiver(
                 
                 // Request missing chunks
                 missing.forEach { sendRetry(it) }
+                resetChunkTimeout()
                 return
             }
             
@@ -250,7 +237,7 @@ class BluetoothPhotoReceiver(
             if (reassembledData == null) {
                 Log.e(TAG, "Failed to reassemble chunks")
                 _transferState.value = PhotoTransferState.Error("Reassembly failed")
-                reset()
+                cleanupSession()
                 return
             }
             
@@ -261,7 +248,7 @@ class BluetoothPhotoReceiver(
                     "MD5 verification failed",
                     PhotoTransferConstants.STATUS_MD5_ERROR
                 )
-                reset()
+                cleanupSession()
                 return
             }
             
@@ -278,12 +265,14 @@ class BluetoothPhotoReceiver(
                 transferTimeMs = transferTime
             ))
             
-            reset()
+            cleanupSession()
             
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to process END packet", e)
             _transferState.value = PhotoTransferState.Error("Failed to process END: ${e.message}")
-            reset()
+            cleanupSession()
         }
     }
     
@@ -293,13 +282,13 @@ class BluetoothPhotoReceiver(
     private suspend fun sendAck(chunkIndex: Int, status: Byte) {
         try {
             val ackPacket = PacketUtils.createAckPacket(chunkIndex, status)
-            withContext(Dispatchers.IO) {
-                outputStream?.let { stream ->
-                    stream.write(ackPacket)
-                    stream.flush()
-                    Log.d(TAG, "Sent ACK: chunk=$chunkIndex, status=${PacketUtils.getStatusName(status)}")
-                }
+            if (sendPacket(ackPacket)) {
+                Log.d(TAG, "Sent ACK: chunk=$chunkIndex, status=${PacketUtils.getStatusName(status)}")
+            } else {
+                failTransfer("Bluetooth connection lost while sending ACK")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send ACK", e)
         }
@@ -311,13 +300,13 @@ class BluetoothPhotoReceiver(
     private suspend fun sendRetry(chunkIndex: Int) {
         try {
             val retryPacket = PacketUtils.createRetryPacket(chunkIndex)
-            withContext(Dispatchers.IO) {
-                outputStream?.let { stream ->
-                    stream.write(retryPacket)
-                    stream.flush()
-                    Log.d(TAG, "Sent RETRY: chunk=$chunkIndex")
-                }
+            if (sendPacket(retryPacket)) {
+                Log.d(TAG, "Sent RETRY: chunk=$chunkIndex")
+            } else {
+                failTransfer("Bluetooth connection lost while requesting retry")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send RETRY", e)
         }
@@ -327,35 +316,47 @@ class BluetoothPhotoReceiver(
      * Starts the overall transfer timeout.
      */
     private fun startTransferTimeout() {
-        timeoutJob?.cancel()
-        timeoutJob = scope.launch {
+        transferTimeoutJob?.cancel()
+        transferTimeoutJob = scope.launch {
             delay(TRANSFER_TIMEOUT_MS)
-            Log.e(TAG, "Transfer timeout")
-            _transferState.value = PhotoTransferState.Error(
-                "Transfer timeout",
-                PhotoTransferConstants.STATUS_TIMEOUT
-            )
-            reset()
+            failTransfer("Transfer timeout", PhotoTransferConstants.STATUS_TIMEOUT)
         }
+        resetChunkTimeout()
     }
     
     /**
      * Resets the chunk timeout (extends overall timeout).
      */
     private fun resetChunkTimeout() {
-        // Simply restart the transfer timeout on each successful chunk
-        startTransferTimeout()
+        chunkTimeoutJob?.cancel()
+        chunkTimeoutJob = scope.launch {
+            delay(CHUNK_TIMEOUT_MS)
+            failTransfer("Timed out waiting for the next photo chunk", PhotoTransferConstants.STATUS_TIMEOUT)
+        }
     }
     
     /**
      * Resets the receiver state.
      */
     fun reset() {
-        timeoutJob?.cancel()
-        timeoutJob = null
-        currentSession = null
+        cleanupSession()
         _transferState.value = PhotoTransferState.Idle
         Log.d(TAG, "Receiver reset")
+    }
+
+    /** Clears transfer resources without erasing a terminal Success/Error state. */
+    private fun cleanupSession() {
+        transferTimeoutJob?.cancel()
+        transferTimeoutJob = null
+        chunkTimeoutJob?.cancel()
+        chunkTimeoutJob = null
+        currentSession = null
+    }
+
+    private fun failTransfer(message: String, status: Byte = PhotoTransferConstants.STATUS_ERROR) {
+        Log.e(TAG, message)
+        _transferState.value = PhotoTransferState.Error(message, status)
+        cleanupSession()
     }
     
     /**
@@ -384,6 +385,7 @@ private data class TransferSession(
     val totalChunks: Int,
     val expectedMd5: ByteArray,
     val receivedChunks: MutableMap<Int, ByteArray>,
+    var receivedBytes: Int,
     val startTime: Long
 ) {
     override fun equals(other: Any?): Boolean {

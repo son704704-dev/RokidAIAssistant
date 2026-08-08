@@ -5,6 +5,7 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +30,7 @@ private const val TAG = "RecordingRepository"
 sealed class RecordingState {
     object Idle : RecordingState()
     data class Recording(val source: RecordingSource, val startTime: Long, val durationMs: Long = 0) : RecordingState()
+    data class Paused(val source: RecordingSource, val startTime: Long, val durationMs: Long) : RecordingState()
     object Stopping : RecordingState()
     data class Error(val message: String) : RecordingState()
 }
@@ -59,6 +61,8 @@ class RecordingRepository private constructor(
     @Volatile private var currentRecordingFile: File? = null
     @Volatile private var currentRecordingId: String? = null
     @Volatile private var recordingStartTime: Long = 0
+    @Volatile private var activeSegmentStartTime: Long = 0
+    @Volatile private var accumulatedDurationMs: Long = 0
     
     // Duration update job
     private var durationUpdateJob: kotlinx.coroutines.Job? = null
@@ -122,27 +126,27 @@ class RecordingRepository private constructor(
      */
     suspend fun startPhoneRecording(): Result<String> = withContext(Dispatchers.IO) {
         recordingMutex.withLock {
+            var newRecorder: MediaRecorder? = null
             try {
-                if (_recordingState.value is RecordingState.Recording) {
-                    return@withContext Result.failure(Exception("Already recording"))
+                if (_recordingState.value !is RecordingState.Idle &&
+                    _recordingState.value !is RecordingState.Error
+                ) {
+                    return@withLock Result.failure(Exception("Already recording"))
                 }
-            
-            val recordingId = UUID.randomUUID().toString()
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val fileName = "REC_${timestamp}_$recordingId.m4a"
-            val outputFile = File(recordingsDir, fileName)
-            
-            // Assign to a local first: if configure/prepare/start throws, the recorder
-            // must still be released (microphone stays held otherwise) and the orphan
-            // zero-byte output file deleted.
-            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(context)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
-            }
-            try {
-                recorder.apply {
+
+                val recordingId = UUID.randomUUID().toString()
+                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+                val outputFile = File(recordingsDir, "REC_${timestamp}_$recordingId.m4a")
+                currentRecordingFile = outputFile
+                currentRecordingId = recordingId
+
+                newRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    MediaRecorder(context)
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaRecorder()
+                }
+                newRecorder.apply {
                     setAudioSource(MediaRecorder.AudioSource.MIC)
                     setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                     setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -153,37 +157,37 @@ class RecordingRepository private constructor(
                     prepare()
                     start()
                 }
-            } catch (e: Exception) {
-                try { recorder.release() } catch (re: Exception) { Log.w(TAG, "Error releasing failed recorder", re) }
-                outputFile.delete()
+                mediaRecorder = newRecorder
+                newRecorder = null
+
+                recordingStartTime = System.currentTimeMillis()
+                activeSegmentStartTime = recordingStartTime
+                accumulatedDurationMs = 0
+                _recordingState.value = RecordingState.Recording(
+                    source = RecordingSource.PHONE,
+                    startTime = recordingStartTime
+                )
+                startDurationUpdate()
+
+                Log.d(TAG, "Started phone recording: $recordingId")
+                Result.success(recordingId)
+            } catch (e: CancellationException) {
+                safelyRelease(newRecorder)
+                cleanupFailedRecording()
                 throw e
+            } catch (e: SecurityException) {
+                safelyRelease(newRecorder)
+                cleanupFailedRecording()
+                Log.e(TAG, "Microphone permission denied", e)
+                _recordingState.value = RecordingState.Error("Microphone permission required")
+                Result.failure(Exception("Microphone permission required. Please grant the permission in Settings."))
+            } catch (e: Exception) {
+                safelyRelease(newRecorder)
+                cleanupFailedRecording()
+                Log.e(TAG, "Failed to start phone recording", e)
+                _recordingState.value = RecordingState.Error(e.message ?: "Failed to start recording")
+                Result.failure(e)
             }
-            mediaRecorder = recorder
-            
-            currentRecordingFile = outputFile
-            currentRecordingId = recordingId
-            recordingStartTime = System.currentTimeMillis()
-            
-            _recordingState.value = RecordingState.Recording(
-                source = RecordingSource.PHONE,
-                startTime = recordingStartTime
-            )
-            
-            // Start duration update
-            startDurationUpdate()
-            
-            Log.d(TAG, "Started phone recording: $recordingId")
-            Result.success(recordingId)
-            
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Microphone permission denied", e)
-            _recordingState.value = RecordingState.Error("Microphone permission required")
-            Result.failure(Exception("Microphone permission required. Please grant the permission in Settings."))
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start phone recording", e)
-            _recordingState.value = RecordingState.Error(e.message ?: "Failed to start recording")
-            Result.failure(e)
-        }
         }
     }
     
@@ -194,32 +198,35 @@ class RecordingRepository private constructor(
     suspend fun startGlassesRecording(): Result<String> = withContext(Dispatchers.IO) {
         recordingMutex.withLock {
             try {
-                if (_recordingState.value is RecordingState.Recording) {
-                    return@withContext Result.failure(Exception("Already recording"))
+                if (_recordingState.value !is RecordingState.Idle &&
+                    _recordingState.value !is RecordingState.Error
+                ) {
+                    return@withLock Result.failure(Exception("Already recording"))
                 }
-            
-            val recordingId = UUID.randomUUID().toString()
-            currentRecordingId = recordingId
-            recordingStartTime = System.currentTimeMillis()
-            
-            _recordingState.value = RecordingState.Recording(
-                source = RecordingSource.GLASSES,
-                startTime = recordingStartTime
-            )
-            
-            // Start duration update
-            startDurationUpdate()
-            
-            // Note: Actual glasses recording is handled via Bluetooth message
-            // The ServiceBridge will be used to send the command
-            Log.d(TAG, "Started glasses recording request: $recordingId")
-            Result.success(recordingId)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start glasses recording", e)
-            _recordingState.value = RecordingState.Error(e.message ?: "Failed to start recording")
-            Result.failure(e)
-        }
+
+                val recordingId = UUID.randomUUID().toString()
+                currentRecordingId = recordingId
+                recordingStartTime = System.currentTimeMillis()
+                activeSegmentStartTime = recordingStartTime
+                accumulatedDurationMs = 0
+
+                _recordingState.value = RecordingState.Recording(
+                    source = RecordingSource.GLASSES,
+                    startTime = recordingStartTime
+                )
+                startDurationUpdate()
+
+                Log.d(TAG, "Started glasses recording request: $recordingId")
+                Result.success(recordingId)
+            } catch (e: CancellationException) {
+                cleanupRecordingState(deleteFile = false)
+                throw e
+            } catch (e: Exception) {
+                cleanupRecordingState(deleteFile = false)
+                Log.e(TAG, "Failed to start glasses recording", e)
+                _recordingState.value = RecordingState.Error(e.message ?: "Failed to start recording")
+                Result.failure(e)
+            }
         }
     }
     
@@ -228,20 +235,47 @@ class RecordingRepository private constructor(
      * Note: MediaRecorder pause/resume is only available on API 24+
      */
     suspend fun pauseRecording() = withContext(Dispatchers.IO) {
-        try {
-            val state = _recordingState.value
-            if (state !is RecordingState.Recording) {
-                return@withContext
+        recordingMutex.withLock {
+            try {
+                when (val state = _recordingState.value) {
+                    is RecordingState.Recording -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+                            state.source == RecordingSource.PHONE
+                        ) {
+                            mediaRecorder?.pause()
+                            accumulatedDurationMs += System.currentTimeMillis() - activeSegmentStartTime
+                            durationUpdateJob?.cancel()
+                            _recordingState.value = RecordingState.Paused(
+                                source = state.source,
+                                startTime = state.startTime,
+                                durationMs = accumulatedDurationMs
+                            )
+                            Log.d(TAG, "Recording paused")
+                        } else {
+                            Log.w(TAG, "Pause not supported on this device or recording source")
+                        }
+                    }
+                    is RecordingState.Paused -> {
+                        mediaRecorder?.resume()
+                        activeSegmentStartTime = System.currentTimeMillis()
+                        _recordingState.value = RecordingState.Recording(
+                            source = state.source,
+                            startTime = state.startTime,
+                            durationMs = state.durationMs
+                        )
+                        startDurationUpdate()
+                        Log.d(TAG, "Recording resumed")
+                    }
+                    else -> Unit
+                }
+            } catch (e: CancellationException) {
+                cleanupFailedRecording()
+                throw e
+            } catch (e: Exception) {
+                cleanupFailedRecording()
+                Log.e(TAG, "Failed to pause or resume recording", e)
+                _recordingState.value = RecordingState.Error(e.message ?: "Failed to pause recording")
             }
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && state.source == RecordingSource.PHONE) {
-                mediaRecorder?.pause()
-                Log.d(TAG, "Recording paused")
-            } else {
-                Log.w(TAG, "Pause not supported on this device or recording source")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to pause recording", e)
         }
     }
     
@@ -251,41 +285,55 @@ class RecordingRepository private constructor(
     suspend fun stopRecording(): Result<RecordingEntity?> = withContext(Dispatchers.IO) {
         recordingMutex.withLock {
             try {
-            val state = _recordingState.value
-            if (state !is RecordingState.Recording) {
-                return@withContext Result.failure(Exception("Not recording"))
+                val state = _recordingState.value
+                val source = when (state) {
+                    is RecordingState.Recording -> state.source
+                    is RecordingState.Paused -> state.source
+                    else -> return@withLock Result.failure(Exception("Not recording"))
+                }
+                val duration = when (state) {
+                    is RecordingState.Recording -> accumulatedDurationMs +
+                        (System.currentTimeMillis() - activeSegmentStartTime)
+                    is RecordingState.Paused -> state.durationMs
+                    else -> 0
+                }
+
+                _recordingState.value = RecordingState.Stopping
+                durationUpdateJob?.cancel()
+
+                val recording = when (source) {
+                    RecordingSource.PHONE -> stopPhoneRecordingInternal(duration)
+                    RecordingSource.GLASSES -> stopGlassesRecordingInternal(duration)
+                }
+
+                if (recording != null && recording.source == RecordingSource.PHONE) {
+                    try {
+                        recordingDao.insert(recording)
+                    } catch (e: Exception) {
+                        File(recording.filePath).delete()
+                        throw e
+                    }
+                    Log.d(TAG, "Phone recording saved: ${recording.id}")
+                } else if (recording != null && recording.source == RecordingSource.GLASSES) {
+                    Log.d(TAG, "Glasses recording stopped (ID: ${recording.id}), waiting for audio data via Bluetooth")
+                }
+
+                cleanupRecordingState(deleteFile = false)
+                _recordingState.value = RecordingState.Idle
+                Result.success(recording)
+            } catch (e: CancellationException) {
+                cleanupFailedRecording()
+                throw e
+            } catch (e: Exception) {
+                cleanupFailedRecording()
+                Log.e(TAG, "Failed to stop recording", e)
+                _recordingState.value = RecordingState.Error(e.message ?: "Failed to stop recording")
+                Result.failure(e)
             }
-            
-            _recordingState.value = RecordingState.Stopping
-            durationUpdateJob?.cancel()
-            
-            val recording = when (state.source) {
-                RecordingSource.PHONE -> stopPhoneRecordingInternal()
-                RecordingSource.GLASSES -> stopGlassesRecordingInternal()
-            }
-            
-            _recordingState.value = RecordingState.Idle
-            
-            // Only save phone recordings to database here
-            // Glasses recordings are saved by saveGlassesRecording() when audio data arrives via Bluetooth
-            if (recording != null && recording.source == RecordingSource.PHONE) {
-                recordingDao.insert(recording)
-                Log.d(TAG, "Phone recording saved: ${recording.id}")
-            } else if (recording != null && recording.source == RecordingSource.GLASSES) {
-                Log.d(TAG, "Glasses recording stopped (ID: ${recording.id}), waiting for audio data via Bluetooth")
-            }
-            
-            Result.success(recording)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to stop recording", e)
-            _recordingState.value = RecordingState.Error(e.message ?: "Failed to stop recording")
-            Result.failure(e)
-        }
         }
     }
     
-    private fun stopPhoneRecordingInternal(): RecordingEntity? {
+    private fun stopPhoneRecordingInternal(duration: Long): RecordingEntity? {
         val recorder = mediaRecorder
         mediaRecorder = null
         try {
@@ -294,9 +342,7 @@ class RecordingRepository private constructor(
             // stop() threw (recording too short / invalid state): the file may be
             // truncated/corrupt — do not report success for it.
             Log.e(TAG, "Error stopping MediaRecorder", e)
-            currentRecordingFile = null
-            currentRecordingId = null
-            return null
+            throw e
         } finally {
             // Always release, even when stop() throws, or the microphone stays held.
             try {
@@ -308,10 +354,6 @@ class RecordingRepository private constructor(
         
         val file = currentRecordingFile ?: return null
         val id = currentRecordingId ?: return null
-        val duration = System.currentTimeMillis() - recordingStartTime
-        
-        currentRecordingFile = null
-        currentRecordingId = null
         
         if (!file.exists()) {
             Log.w(TAG, "Recording file not found: ${file.absolutePath}")
@@ -333,14 +375,10 @@ class RecordingRepository private constructor(
         )
     }
     
-    private fun stopGlassesRecordingInternal(): RecordingEntity? {
+    private fun stopGlassesRecordingInternal(duration: Long): RecordingEntity? {
         // For glasses recording, the actual audio data is received via Bluetooth
         // This creates a placeholder entry that will be updated when audio is received
         val id = currentRecordingId ?: return null
-        val duration = System.currentTimeMillis() - recordingStartTime
-        
-        currentRecordingId = null
-        
         val title = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
         
         return RecordingEntity(
@@ -359,15 +397,48 @@ class RecordingRepository private constructor(
             while (true) {
                 kotlinx.coroutines.delay(100)
                 val state = _recordingState.value
-                if (state !is RecordingState.Recording) break
-                // CAS against the exact observed instance: if stopRecording() has already
-                // published Stopping/Idle, this fails instead of resurrecting a stale state.
-                _recordingState.compareAndSet(
-                    state,
-                    state.copy(durationMs = System.currentTimeMillis() - state.startTime)
-                )
+                if (state is RecordingState.Recording) {
+                    val duration = accumulatedDurationMs +
+                        (System.currentTimeMillis() - activeSegmentStartTime)
+                    // If stopRecording() has already published Stopping/Idle, do not
+                    // resurrect this stale Recording state from the ticker.
+                    _recordingState.compareAndSet(state, state.copy(durationMs = duration))
+                } else {
+                    break
+                }
             }
         }
+    }
+
+    private fun safelyRelease(recorder: MediaRecorder?) {
+        try {
+            recorder?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to release MediaRecorder", e)
+        }
+    }
+
+    private fun cleanupFailedRecording() {
+        safelyRelease(mediaRecorder)
+        mediaRecorder = null
+        cleanupRecordingState(deleteFile = true)
+    }
+
+    private fun cleanupRecordingState(deleteFile: Boolean) {
+        durationUpdateJob?.cancel()
+        durationUpdateJob = null
+        if (deleteFile) {
+            currentRecordingFile?.let { file ->
+                if (file.exists() && !file.delete()) {
+                    Log.w(TAG, "Failed to delete incomplete recording: ${file.absolutePath}")
+                }
+            }
+        }
+        currentRecordingFile = null
+        currentRecordingId = null
+        recordingStartTime = 0
+        activeSegmentStartTime = 0
+        accumulatedDurationMs = 0
     }
     
     // ==================== Recording Management ====================
@@ -420,15 +491,17 @@ class RecordingRepository private constructor(
         modelId: String? = null,
         recordingId: String? = null
     ): RecordingEntity? = withContext(Dispatchers.IO) {
+        var outputFile: File? = null
         try {
             val newRecordingId = recordingId ?: UUID.randomUUID().toString()
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
             val fileName = "GLASSES_${timestamp}_$newRecordingId.wav"
-            val outputFile = File(recordingsDir, fileName)
+            val file = File(recordingsDir, fileName)
+            outputFile = file
             
             // Convert PCM to WAV and save
             val wavData = pcmToWav(audioData)
-            outputFile.writeBytes(wavData)
+            file.writeBytes(wavData)
             
             // Estimate duration based on audio data size
             // PCM 16-bit mono at 16kHz = 2 bytes per sample, 16000 samples per second
@@ -439,11 +512,11 @@ class RecordingRepository private constructor(
             val recording = RecordingEntity(
                 id = newRecordingId,
                 title = "Glasses Recording $title",
-                filePath = outputFile.absolutePath,
+                filePath = file.absolutePath,
                 source = RecordingSource.GLASSES,
                 status = RecordingStatus.COMPLETED,
                 durationMs = durationMs,
-                fileSizeBytes = outputFile.length(),
+                fileSizeBytes = file.length(),
                 sampleRate = GLASSES_SAMPLE_RATE,
                 channels = 1,
                 transcript = transcript,
@@ -456,7 +529,15 @@ class RecordingRepository private constructor(
             Log.d(TAG, "Saved glasses recording: $newRecordingId, duration: ${durationMs}ms, size: ${audioData.size} bytes")
             
             recording
+        } catch (e: CancellationException) {
+            outputFile?.delete()
+            throw e
         } catch (e: Exception) {
+            outputFile?.let { file ->
+                if (file.exists() && !file.delete()) {
+                    Log.w(TAG, "Failed to delete incomplete glasses recording: ${file.absolutePath}")
+                }
+            }
             Log.e(TAG, "Failed to save glasses recording", e)
             null
         }
@@ -575,17 +656,15 @@ class RecordingRepository private constructor(
      */
     fun release() {
         durationUpdateJob?.cancel()
-        try {
-            mediaRecorder?.release()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error releasing MediaRecorder", e)
-        }
+        safelyRelease(mediaRecorder)
         mediaRecorder = null
         // Reset state: otherwise observers keep seeing a bogus "recording in progress"
         // and the current-recording fields point at an orphaned partial file.
         currentRecordingFile = null
         currentRecordingId = null
         recordingStartTime = 0
+        activeSegmentStartTime = 0
+        accumulatedDurationMs = 0
         _recordingState.value = RecordingState.Idle
     }
 }

@@ -121,7 +121,7 @@ class SystemToolsHandlerTest {
         val result = handler.handleMakeCall(call)
 
         assertThat(result.success).isFalse()
-        assertThat(result.errorMessage).contains("No valid phone number")
+        assertThat(result.errorMessage).contains("Contacts permission")
     }
 
     @Test

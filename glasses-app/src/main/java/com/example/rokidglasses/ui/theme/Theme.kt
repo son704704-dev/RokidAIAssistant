@@ -14,7 +14,7 @@ import androidx.compose.ui.unit.sp
 
 private val GlassesColorScheme = darkColorScheme(
     primary = Color(0xFF64B5F6),          // Light blue - primary interactive elements
-    onPrimary = Color.White,
+    onPrimary = Color(0xFF002E4E),
     primaryContainer = Color(0xFF1565C0),
     onPrimaryContainer = Color(0xFFD0E4FF),
     
@@ -27,7 +27,7 @@ private val GlassesColorScheme = darkColorScheme(
     onTertiary = Color.Black,
     
     error = Color(0xFFEF5350),             // Red - error
-    onError = Color.White,
+    onError = Color(0xFF3B0000),
     
     background = Color.Black,              // Pure black background
     onBackground = Color.White,

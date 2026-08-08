@@ -12,8 +12,12 @@ import android.os.Build
 import android.util.Log
 import com.example.rokidcommon.protocol.Message
 import com.example.rokidcommon.protocol.MessageType
+import com.example.rokidcommon.protocol.photo.PhotoTransferConstants
+import com.example.rokidglasses.service.photo.PhotoTransferProtocol
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.IOException
 import java.io.InputStream
@@ -45,6 +49,7 @@ class BluetoothSppClient(
         
         // Message delimiter
         private const val MESSAGE_DELIMITER = "\n"
+        private const val MAX_INCOMING_BUFFER_BYTES = 4 * 1024 * 1024
     }
     
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
@@ -59,6 +64,10 @@ class BluetoothSppClient(
     private var connectJob: Job? = null
     private var readJob: Job? = null
     private var heartbeatJob: Job? = null
+    private val writeMutex = Mutex()
+
+    private val _photoControlPackets = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    val photoControlPackets: SharedFlow<ByteArray> = _photoControlPackets.asSharedFlow()
     
     // Heartbeat interval (10 seconds)
     private val HEARTBEAT_INTERVAL = 10_000L
@@ -392,23 +401,37 @@ class BluetoothSppClient(
             return false
         }
         
-        return withContext(Dispatchers.IO) {
+        val json = message.toJson()
+        val sent = sendRawPacket((json + MESSAGE_DELIMITER).toByteArray(Charsets.UTF_8))
+        if (sent) {
+            Log.d(TAG, "Sent message: ${message.type}")
+        }
+        return sent
+    }
+
+    /** Writes one complete protocol frame without allowing byte-level interleaving. */
+    suspend fun sendRawPacket(data: ByteArray): Boolean = withContext(Dispatchers.IO) {
+        writeMutex.withLock {
             try {
-                val json = message.toJson()
-                val data = (json + MESSAGE_DELIMITER).toByteArray(Charsets.UTF_8)
-                
-                outputStream?.write(data)
-                outputStream?.flush()
-                
-                Log.d(TAG, "Sent message: ${message.type}")
+                val stream = outputStream ?: return@withLock false
+                stream.write(data)
+                stream.flush()
                 true
             } catch (e: IOException) {
-                Log.e(TAG, "Failed to send message", e)
+                Log.e(TAG, "Failed to send data", e)
                 handleDisconnection()
                 false
             }
         }
     }
+
+    fun createPhotoTransferProtocol(
+        onProgress: (current: Int, total: Int) -> Unit = { _, _ -> }
+    ): PhotoTransferProtocol = PhotoTransferProtocol(
+        sendPacket = ::sendRawPacket,
+        controlPackets = photoControlPackets,
+        onProgress = onProgress
+    )
     
     /**
      * Send voice start signal
@@ -434,7 +457,7 @@ class BluetoothSppClient(
     private fun startReading() {
         readJob?.cancel()
         readJob = scope.launch(Dispatchers.IO) {
-            val buffer = StringBuilder()
+            var pending = ByteArray(0)
             val readBuffer = ByteArray(4096)
             
             while (isActive && _connectionState.value == BluetoothClientState.CONNECTED) {
@@ -446,18 +469,41 @@ class BluetoothSppClient(
                         break
                     }
                     
-                    val received = String(readBuffer, 0, bytesRead, Charsets.UTF_8)
-                    buffer.append(received)
-                    
-                    // Process complete messages
-                    var delimiterIndex: Int
-                    while (buffer.indexOf(MESSAGE_DELIMITER).also { delimiterIndex = it } >= 0) {
-                        val messageStr = buffer.substring(0, delimiterIndex)
-                        buffer.delete(0, delimiterIndex + MESSAGE_DELIMITER.length)
-                        
-                        if (messageStr.isNotBlank()) {
-                            parseAndEmitMessage(messageStr)
+                    val incoming = ByteArray(pending.size + bytesRead)
+                    pending.copyInto(incoming)
+                    readBuffer.copyInto(incoming, pending.size, 0, bytesRead)
+
+                    var offset = 0
+                    while (offset < incoming.size) {
+                        val packetLength = when (incoming[offset]) {
+                            PhotoTransferConstants.PACKET_TYPE_ACK -> PhotoTransferConstants.ACK_PACKET_SIZE
+                            PhotoTransferConstants.PACKET_TYPE_RETRY -> PhotoTransferConstants.RETRY_PACKET_SIZE
+                            else -> 0
                         }
+
+                        if (packetLength > 0) {
+                            if (incoming.size - offset < packetLength) break
+                            _photoControlPackets.emit(incoming.copyOfRange(offset, offset + packetLength))
+                            offset += packetLength
+                            continue
+                        }
+
+                        var newline = offset
+                        while (newline < incoming.size && incoming[newline] != '\n'.code.toByte()) {
+                            newline++
+                        }
+                        if (newline >= incoming.size) break
+
+                        if (newline > offset) {
+                            val messageStr = incoming.copyOfRange(offset, newline).toString(Charsets.UTF_8)
+                            if (messageStr.isNotBlank()) parseAndEmitMessage(messageStr)
+                        }
+                        offset = newline + 1
+                    }
+
+                    pending = incoming.copyOfRange(offset, incoming.size)
+                    if (pending.size > MAX_INCOMING_BUFFER_BYTES) {
+                        throw IOException("Incoming Bluetooth frame exceeds size limit")
                     }
                     
                 } catch (e: IOException) {
@@ -474,22 +520,9 @@ class BluetoothSppClient(
      * Parse and emit message
      */
     private suspend fun parseAndEmitMessage(jsonStr: String) {
-        // Skip non-JSON data (binary photo transfer ACKs, etc.)
         val trimmed = jsonStr.trim()
-        
-        // Try to find JSON object in the string (may have binary prefix)
-        val jsonStart = trimmed.indexOf('{')
-        if (jsonStart < 0) {
-            // No JSON found, silently skip (likely binary data)
-            return
-        }
-        
-        val jsonContent = if (jsonStart > 0) {
-            // Extract JSON part, discard binary prefix
-            trimmed.substring(jsonStart)
-        } else {
-            trimmed
-        }
+        if (!trimmed.startsWith('{')) return
+        val jsonContent = trimmed
         
         try {
             val json = JSONObject(jsonContent)

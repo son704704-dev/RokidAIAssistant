@@ -1,17 +1,22 @@
 package com.example.rokidaiassistant.activities.bluetooth
 
 import android.annotation.SuppressLint
+import android.Manifest
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.core.content.ContextCompat
 import com.example.rokidaiassistant.data.Constants
 import com.example.rokidaiassistant.sdk.CxrApi
 import com.example.rokidaiassistant.sdk.BluetoothStatusCallback
@@ -51,15 +56,24 @@ class BluetoothInitViewModel : ViewModel() {
     val uiState: StateFlow<BluetoothUiState> = _uiState.asStateFlow()
     
     private val discoveredDevices = mutableListOf<BluetoothDevice>()
+    private var bluetoothLeScanner: BluetoothLeScanner? = null
     
     // BLE scan callback
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            if (device.name != null && !discoveredDevices.any { it.address == device.address }) {
-                discoveredDevices.add(device)
-                _uiState.value = _uiState.value.copy(devices = discoveredDevices.toList())
-                Log.d(TAG, "Device found: ${device.name} - ${device.address}")
+            try {
+                if (device.name != null && !discoveredDevices.any { it.address == device.address }) {
+                    discoveredDevices.add(device)
+                    _uiState.value = _uiState.value.copy(devices = discoveredDevices.toList())
+                    Log.d(TAG, "Device found: ${device.name} - ${device.address}")
+                }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Bluetooth permission was revoked during scanning", e)
+                _uiState.value = _uiState.value.copy(
+                    isScanning = false,
+                    error = "Bluetooth permission is required to scan for glasses"
+                )
             }
         }
         
@@ -82,6 +96,7 @@ class BluetoothInitViewModel : ViewModel() {
                 isScanning = false,
                 error = errorMsg
             )
+            bluetoothLeScanner = null
         }
     }
     
@@ -127,6 +142,12 @@ class BluetoothInitViewModel : ViewModel() {
      * Start BLE scanning
      */
     fun startScan(context: Context) {
+        if (_uiState.value.isScanning) return
+        if (!hasRequiredBluetoothPermissions(context)) {
+            onPermissionDenied()
+            return
+        }
+
         val bluetoothAdapter = context.getSystemService(BluetoothManager::class.java)?.adapter
         if (bluetoothAdapter == null) {
             _uiState.value = _uiState.value.copy(error = "This device does not support Bluetooth")
@@ -138,6 +159,7 @@ class BluetoothInitViewModel : ViewModel() {
             _uiState.value = _uiState.value.copy(error = "Unable to get BLE scanner")
             return
         }
+        bluetoothLeScanner = scanner
         
         // Clear previous device list
         discoveredDevices.clear()
@@ -175,12 +197,18 @@ class BluetoothInitViewModel : ViewModel() {
      * Stop BLE scanning
      */
     fun stopScan(context: Context) {
-        val bluetoothAdapter = context.getSystemService(BluetoothManager::class.java)?.adapter
+        if (!hasRequiredBluetoothPermissions(context)) {
+            bluetoothLeScanner = null
+            _uiState.value = _uiState.value.copy(isScanning = false)
+            return
+        }
+
         try {
-            bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
+            bluetoothLeScanner?.stopScan(scanCallback)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop scan", e)
         }
+        bluetoothLeScanner = null
         _uiState.value = _uiState.value.copy(isScanning = false)
         Log.d(TAG, "Stopped BLE scan")
     }
@@ -189,17 +217,24 @@ class BluetoothInitViewModel : ViewModel() {
      * Connect to specified device
      */
     fun connectToDevice(context: Context, device: BluetoothDevice) {
+        if (!hasRequiredBluetoothPermissions(context)) {
+            onPermissionDenied()
+            return
+        }
+
         // Stop scanning first
         stopScan(context)
+
+        val deviceName = device.name ?: "Unknown Device"
         
         _uiState.value = _uiState.value.copy(
             isConnecting = true,
-            connectedDeviceName = device.name,
+            connectedDeviceName = deviceName,
             error = null
         )
         
         try {
-            Log.d(TAG, "Starting connection: ${device.name} (${device.address})")
+            Log.d(TAG, "Starting connection: $deviceName (${device.address})")
             
             // Step 1: Initialize Bluetooth connection
             CxrApi.getInstance().initBluetooth(context, device, bluetoothStatusCallback)
@@ -224,7 +259,8 @@ class BluetoothInitViewModel : ViewModel() {
             Log.d(TAG, "SN authentication file size: ${snBytes.size} bytes")
             
             // Step 3: Perform final connection (with authentication)
-            val uuid = device.uuids?.firstOrNull()?.uuid?.toString() ?: ""
+            val uuid = device.uuids?.firstOrNull()?.uuid?.toString()
+                ?: Constants.SERVICE_UUID.toString()
             CxrApi.getInstance().connectBluetooth(
                 context,
                 uuid,
@@ -256,14 +292,39 @@ class BluetoothInitViewModel : ViewModel() {
         }
         _uiState.value = BluetoothUiState()
     }
+
+    fun onPermissionDenied() {
+        _uiState.value = _uiState.value.copy(
+            isScanning = false,
+            isConnecting = false,
+            error = "Bluetooth permission is required to connect to Rokid glasses"
+        )
+    }
+
+    private fun hasRequiredBluetoothPermissions(context: Context): Boolean {
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        return permissions.all { permission ->
+            ContextCompat.checkSelfPermission(context, permission) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+    }
     
     override fun onCleared() {
-        super.onCleared()
         // Clean up resources when ViewModel is destroyed
         try {
+            bluetoothLeScanner?.stopScan(scanCallback)
+            bluetoothLeScanner = null
             CxrApi.getInstance().deinitBluetooth()
         } catch (e: Exception) {
             // Ignore
         }
+        super.onCleared()
     }
 }

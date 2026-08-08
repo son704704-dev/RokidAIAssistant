@@ -75,11 +75,11 @@ class SttCredentialsRepository(context: Context) {
         }
     }
     
-    private val masterKey = MasterKey.Builder(context, MasterKey.DEFAULT_MASTER_KEY_ALIAS)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-    
     private val prefs: SharedPreferences = try {
+        val masterKey = MasterKey.Builder(context, MasterKey.DEFAULT_MASTER_KEY_ALIAS)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+
         EncryptedSharedPreferences.create(
             context,
             PREFS_NAME,
@@ -88,8 +88,11 @@ class SttCredentialsRepository(context: Context) {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     } catch (e: Exception) {
-        Log.w(TAG, "Failed to create encrypted prefs, using regular prefs", e)
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        Log.e(TAG, "Encrypted credential storage is unavailable", e)
+        throw IllegalStateException(
+            "Unable to initialize encrypted STT credential storage",
+            e
+        )
     }
     
     private val _credentialsFlow = MutableStateFlow(loadCredentials())
@@ -156,7 +159,7 @@ class SttCredentialsRepository(context: Context) {
      * Save credentials
      */
     fun saveCredentials(credentials: SttCredentials) {
-        prefs.edit().apply {
+        val saved = prefs.edit().apply {
             putString(KEY_SELECTED_PROVIDER, credentials.selectedProvider)
             
             // Deepgram
@@ -202,8 +205,9 @@ class SttCredentialsRepository(context: Context) {
             putString(KEY_VOLCENGINE_REGION, credentials.volcengineRegion)
             putString(KEY_VOLCENGINE_APP_ID, credentials.volcengineAppId)
             
-            apply()
-        }
+        }.commit()
+
+        check(saved) { "Failed to persist encrypted STT credentials" }
         
         _credentialsFlow.value = credentials
         Log.d(TAG, "STT credentials saved for provider: ${credentials.selectedProvider}")
@@ -221,7 +225,9 @@ class SttCredentialsRepository(context: Context) {
      * Clear all credentials (for logout/reset)
      */
     fun clearAll() {
-        prefs.edit().clear().apply()
+        check(prefs.edit().clear().commit()) {
+            "Failed to clear encrypted STT credentials"
+        }
         _credentialsFlow.value = SttCredentials()
         Log.d(TAG, "All STT credentials cleared")
     }

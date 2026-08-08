@@ -132,9 +132,11 @@ fun LogViewerScreen(
                                 text = { Text(stringResource(R.string.log_copy_to_clipboard)) },
                                 onClick = {
                                     showMoreMenu = false
-                                    val logsText = viewModel.getLogsForShare()
-                                    clipboardManager.setText(AnnotatedString(logsText))
-                                    Toast.makeText(context, context.getString(R.string.log_logs_copied_clipboard), Toast.LENGTH_SHORT).show()
+                                    scope.launch {
+                                        val logsText = viewModel.getLogsForShare()
+                                        clipboardManager.setText(AnnotatedString(logsText))
+                                        Toast.makeText(context, context.getString(R.string.log_logs_copied_clipboard), Toast.LENGTH_SHORT).show()
+                                    }
                                 },
                                 leadingIcon = { Icon(Icons.Default.ContentCopy, null) }
                             )

@@ -221,9 +221,9 @@ class SettingsRepository(private val context: Context) {
             customBaseUrl = prefs.getString(KEY_CUSTOM_BASE_URL, "http://localhost:11434/v1/")
                 ?: "http://localhost:11434/v1/",
             customModelName = prefs.getString(KEY_CUSTOM_MODEL_NAME, "llama4") ?: "llama4",
-            sttProvider = SttProvider.fromName(
+            sttProvider = SttProvider.fromNameOrNull(
                 prefs.getString(KEY_STT_PROVIDER, SttProvider.GEMINI.name) ?: SttProvider.GEMINI.name
-            ),
+            ) ?: SttProvider.GEMINI,
             // Use device locale (e.g. "ko-KR") as the first-run default so new users get
             // the correct TTS and response language automatically.
             // Existing users who already have a saved value keep their preference unchanged.

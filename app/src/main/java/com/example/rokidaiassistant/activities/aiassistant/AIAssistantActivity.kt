@@ -21,6 +21,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.rokidaiassistant.BuildConfig
 import com.example.rokidaiassistant.ui.theme.RokidAIAssistantTheme
 
 class AIAssistantActivity : ComponentActivity() {
@@ -116,8 +117,9 @@ fun AIAssistantScreen(
                 ErrorBanner(message = error)
             }
             
-            // Test input area (for development)
-            TestInputArea(onSendMessage = onTestMessage)
+            if (BuildConfig.DEBUG) {
+                TestInputArea(onSendMessage = onTestMessage)
+            }
         }
     }
 }

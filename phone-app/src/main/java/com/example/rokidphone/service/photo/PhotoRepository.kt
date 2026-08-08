@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -54,6 +56,7 @@ class PhotoRepository(
     // SharedFlow for new photo events - used by ImageAnalysisViewModel
     private val _photoFlow = MutableSharedFlow<PhotoData>(replay = 0, extraBufferCapacity = 1)
     val photoFlow: SharedFlow<PhotoData> = _photoFlow.asSharedFlow()
+    private val mutationMutex = Mutex()
     
     // Photo storage directory
     private val photoDir: File by lazy {
@@ -77,27 +80,33 @@ class PhotoRepository(
      */
     suspend fun processReceivedPhoto(receivedPhoto: ReceivedPhoto): PhotoData? {
         return withContext(Dispatchers.IO) {
+            mutationMutex.withLock {
+            var bitmap: Bitmap? = null
             try {
                 Log.d(TAG, "Processing received photo: ${receivedPhoto.data.size} bytes")
                 
                 // Decode JPEG to verify it's valid
-                val bitmap = BitmapFactory.decodeByteArray(
+                bitmap = BitmapFactory.decodeByteArray(
                     receivedPhoto.data, 
                     0, 
                     receivedPhoto.data.size
                 )
                 
-                if (bitmap == null) {
+                val decodedBitmap = bitmap
+                if (decodedBitmap == null) {
                     Log.e(TAG, "Failed to decode JPEG")
                     return@withContext null
                 }
                 
-                Log.d(TAG, "Decoded photo: ${bitmap.width}x${bitmap.height}")
+                Log.d(TAG, "Decoded photo: ${decodedBitmap.width}x${decodedBitmap.height}")
                 
                 // Generate file name
                 val dateFormat = SimpleDateFormat(DATE_FORMAT, Locale.getDefault())
                 val timestamp = dateFormat.format(Date(receivedPhoto.timestamp))
-                val fileName = String.format(PHOTO_NAME_FORMAT, timestamp)
+                val fileName = String.format(
+                    PHOTO_NAME_FORMAT,
+                    "${timestamp}_${UUID.randomUUID().toString().take(8)}"
+                )
                 val photoFile = File(photoDir, fileName)
                 
                 // Save to file
@@ -112,8 +121,8 @@ class PhotoRepository(
                     id = UUID.randomUUID().toString(),
                     filePath = photoFile.absolutePath,
                     timestamp = receivedPhoto.timestamp,
-                    width = bitmap.width,
-                    height = bitmap.height,
+                    width = decodedBitmap.width,
+                    height = decodedBitmap.height,
                     sizeBytes = receivedPhoto.data.size,
                     transferTimeMs = receivedPhoto.transferTimeMs
                 )
@@ -130,14 +139,14 @@ class PhotoRepository(
                 // Cleanup old photos
                 cleanupOldPhotos()
                 
-                // Recycle bitmap
-                bitmap.recycle()
-                
                 photoData
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to process photo", e)
                 null
+            } finally {
+                bitmap?.recycle()
+            }
             }
         }
     }
@@ -207,6 +216,7 @@ class PhotoRepository(
      */
     suspend fun deletePhoto(photoData: PhotoData) {
         withContext(Dispatchers.IO) {
+            mutationMutex.withLock {
             try {
                 if (!File(photoData.filePath).delete()) {
                     Log.w(TAG, "Failed to delete photo file: ${photoData.filePath}")
@@ -224,6 +234,7 @@ class PhotoRepository(
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to delete photo", e)
             }
+            }
         }
     }
     
@@ -232,6 +243,7 @@ class PhotoRepository(
      */
     suspend fun clearAll() {
         withContext(Dispatchers.IO) {
+            mutationMutex.withLock {
             try {
                 photoDir.listFiles()?.forEach {
                     if (!it.delete()) {
@@ -244,13 +256,14 @@ class PhotoRepository(
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to clear photos", e)
             }
+            }
         }
     }
     
     /**
      * Loads photo history from storage.
      */
-    private fun loadPhotoHistory() {
+    private suspend fun loadPhotoHistory() = mutationMutex.withLock {
         try {
             val photos = photoDir.listFiles()
                 ?.filter { it.isFile && it.extension == "jpg" }

@@ -102,6 +102,7 @@ class LiveAudioManager(
 
     private val isRecording = AtomicBoolean(false)
     private val isPlaying = AtomicBoolean(false)
+    private var recordingJob: Job? = null
 
     // ========== Playback Queue ==========
 
@@ -170,7 +171,7 @@ class LiveAudioManager(
                 INPUT_AUDIO_FORMAT
             )
 
-            if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
+            if (minBufferSize <= 0) {
                 Log.e(TAG, "Unable to get valid buffer size")
                 onError?.invoke("Audio device not supported")
                 return false
@@ -228,6 +229,12 @@ class LiveAudioManager(
 
         Log.d(TAG, "Stopping recording")
         isRecording.set(false)
+        runCatching { audioRecord?.stop() }
+        val job = recordingJob
+        recordingJob = null
+        runBlocking {
+            withTimeoutOrNull(1_000L) { job?.cancelAndJoin() }
+        }
         releaseAudioRecord()
         updateState()
 
@@ -256,31 +263,38 @@ class LiveAudioManager(
      * Recording loop coroutine
      */
     private fun startRecordingLoop() {
-        scope.launch {
+        recordingJob?.cancel()
+        recordingJob = scope.launch {
             val buffer = ByteArray(INPUT_CHUNK_SIZE)
+            try {
+                while (isActive && isRecording.get()) {
+                    if (_isRecordingPaused.value) {
+                        delay(10)
+                        continue
+                    }
 
-            while (isRecording.get()) {
-                // If paused (AI is speaking), skip reading but keep the loop running
-                if (_isRecordingPaused.value) {
-                    delay(10)
-                    continue
+                    val recorder = audioRecord
+                        ?: throw IllegalStateException("AudioRecord was released during recording")
+                    val bytesRead = recorder.read(buffer, 0, buffer.size)
+
+                    when {
+                        bytesRead > 0 -> onAudioChunk?.invoke(buffer.copyOf(bytesRead))
+                        bytesRead < 0 -> throw IllegalStateException("Audio read failed: $bytesRead")
+                    }
                 }
-
-                val audioRecord = this@LiveAudioManager.audioRecord ?: break
-
-                val bytesRead = audioRecord.read(buffer, 0, buffer.size)
-
-                if (bytesRead > 0) {
-                    // Copy data and emit via callback
-                    val chunk = buffer.copyOf(bytesRead)
-                    onAudioChunk?.invoke(chunk)
-                } else if (bytesRead < 0) {
-                    Log.e(TAG, "Failed to read audio: $bytesRead")
-                    break
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Recording loop failed", e)
+                _state.value = State.ERROR
+                onError?.invoke("Recording failed: ${e.message}")
+            } finally {
+                if (isRecording.getAndSet(false)) {
+                    releaseAudioRecord()
+                    updateState()
                 }
+                Log.d(TAG, "Recording loop ended")
             }
-
-            Log.d(TAG, "Recording loop ended")
         }
     }
 
@@ -326,19 +340,20 @@ class LiveAudioManager(
      * Release AudioRecord resources
      */
     private fun releaseAudioRecord() {
-        try {
-            acousticEchoCanceler?.release()
-            acousticEchoCanceler = null
+        runCatching { acousticEchoCanceler?.release() }
+            .onFailure { Log.w(TAG, "Failed to release echo canceller", it) }
+        acousticEchoCanceler = null
+        runCatching { noiseSuppressor?.release() }
+            .onFailure { Log.w(TAG, "Failed to release noise suppressor", it) }
+        noiseSuppressor = null
 
-            noiseSuppressor?.release()
-            noiseSuppressor = null
-
-            audioRecord?.stop()
-            audioRecord?.release()
-            audioRecord = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to release AudioRecord", e)
-        }
+        val recorder = audioRecord
+        audioRecord = null
+        runCatching {
+            if (recorder?.recordingState == AudioRecord.RECORDSTATE_RECORDING) recorder.stop()
+        }.onFailure { Log.w(TAG, "Failed to stop AudioRecord", it) }
+        runCatching { recorder?.release() }
+            .onFailure { Log.e(TAG, "Failed to release AudioRecord", it) }
     }
 
     // ========== Playback Control ==========
@@ -487,16 +502,18 @@ class LiveAudioManager(
      * Release AudioTrack resources
      */
     private fun releaseAudioTrack() {
-        playbackJob?.cancel()
+        val job = playbackJob
         playbackJob = null
-
-        try {
-            audioTrack?.stop()
-            audioTrack?.release()
-            audioTrack = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to release AudioTrack", e)
+        runBlocking {
+            withTimeoutOrNull(1_000L) { job?.cancelAndJoin() }
         }
+
+        val track = audioTrack
+        audioTrack = null
+        runCatching { track?.stop() }
+            .onFailure { Log.w(TAG, "Failed to stop AudioTrack", it) }
+        runCatching { track?.release() }
+            .onFailure { Log.e(TAG, "Failed to release AudioTrack", it) }
     }
 
     // ========== State Update ==========

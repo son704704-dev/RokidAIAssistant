@@ -66,6 +66,8 @@ class GeminiLiveSession(
     private var liveService: GeminiLiveService? = null
     private var audioManager: LiveAudioManager? = null
     private var toolCallRouter: ToolCallRouter? = null
+    private var toolResultsJob: Job? = null
+    private var delayedRecordingJob: Job? = null
 
     // ========== Event Streams ==========
 
@@ -141,6 +143,9 @@ class GeminiLiveSession(
             Log.w(TAG, "Session is already in progress, state: ${_sessionState.value}")
             return false
         }
+        if (_sessionState.value == SessionState.ERROR) {
+            stop()
+        }
 
         Log.d(TAG, "Starting Live session")
 
@@ -164,7 +169,7 @@ class GeminiLiveSession(
                 }
 
                 // Collect tool execution results and return to WebSocket
-                scope.launch {
+                toolResultsJob = scope.launch {
                     router.toolResults.collect { result ->
                         Log.d(TAG, "Tool result received: ${result.toolCallId}, success=${result.success}")
                         sendToolResponse(result.toolCallId, result.toResponseJson())
@@ -245,6 +250,7 @@ class GeminiLiveSession(
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start session", e)
+            cleanupComponents()
             _errorMessage.value = e.message ?: "Startup failed"
             _sessionState.value = SessionState.ERROR
             return false
@@ -255,7 +261,9 @@ class GeminiLiveSession(
      * Stop Live Session
      */
     fun stop() {
-        if (_sessionState.value == SessionState.IDLE) {
+        if (_sessionState.value == SessionState.IDLE &&
+            liveService == null && audioManager == null && toolCallRouter == null
+        ) {
             Log.w(TAG, "Session not started")
             return
         }
@@ -264,13 +272,7 @@ class GeminiLiveSession(
         _sessionState.value = SessionState.DISCONNECTING
 
         try {
-            // Stop recording and playback
-            audioManager?.release()
-            audioManager = null
-
-            // Disconnect WebSocket
-            liveService?.disconnect()
-            liveService = null
+            cleanupComponents()
 
             _sessionState.value = SessionState.IDLE
             Log.d(TAG, "Session ended")
@@ -369,9 +371,13 @@ class GeminiLiveSession(
                 _sessionState.value = SessionState.ACTIVE
 
                 // Connection ready, start recording
-                scope.launch {
+                delayedRecordingJob?.cancel()
+                val manager = audioManager
+                delayedRecordingJob = scope.launch {
                     delay(100)  // Short delay to ensure WebSocket stability
-                    audioManager?.startRecording()
+                    if (_sessionState.value == SessionState.ACTIVE && audioManager === manager) {
+                        manager?.startRecording()
+                    }
                 }
 
                 Log.d(TAG, "Session ready, starting recording")
@@ -478,17 +484,23 @@ class GeminiLiveSession(
      */
     fun release() {
         Log.d(TAG, "Releasing GeminiLiveSession resources")
+        stop()
+        scope.cancel()
+    }
 
-        // Cancel all in-flight tool calls
+    private fun cleanupComponents() {
+        delayedRecordingJob?.cancel()
+        delayedRecordingJob = null
+        toolResultsJob?.cancel()
+        toolResultsJob = null
+
+        liveService?.disconnect()
+        liveService = null
+        audioManager?.release()
+        audioManager = null
         toolCallRouter?.cancelAll()
         toolCallRouter?.release()
         toolCallRouter = null
-
-        stop()
-
-        audioManager?.abandonAudioFocus()
-
-        scope.cancel()
     }
 
     /**

@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -101,8 +103,14 @@ class LogViewerViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun refreshLogs() {
         viewModelScope.launch {
-            logManager.loadSystemLogsToBuffer(1000)
-            refreshStats()
+            try {
+                withContext(Dispatchers.IO) {
+                    logManager.loadSystemLogsToBuffer(1000)
+                }
+                refreshStats()
+            } catch (e: Exception) {
+                _message.value = "Failed to refresh logs: ${e.message ?: "unknown error"}"
+            }
         }
     }
     
@@ -207,8 +215,8 @@ class LogViewerViewModel(application: Application) : AndroidViewModel(applicatio
     /**
      * Get logs as shareable string
      */
-    fun getLogsForShare(): String {
-        return logManager.exportLogsAsString(_filter.value)
+    suspend fun getLogsForShare(): String = withContext(Dispatchers.Default) {
+        logManager.exportLogsAsString(_filter.value)
     }
     
     /**

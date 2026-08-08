@@ -1,6 +1,7 @@
 package com.example.rokidphone.service.stt
 
 import com.example.rokidphone.service.SpeechResult
+import com.example.rokidphone.service.SpeechErrorCode
 
 /**
  * Speech-to-Text Service Interface
@@ -24,14 +25,18 @@ interface SttService {
     /**
      * Transcribe pre-encoded audio file (e.g. M4A, MP3, OGG)
      * Unlike transcribe() which expects raw PCM data, this accepts encoded audio with its MIME type.
-     * Default implementation falls back to transcribe() (treating data as PCM).
+     * Providers must override this when they support encoded input. Treating an encoded
+     * container as raw PCM produces invalid audio and misleading recognition results.
      * @param audioData Encoded audio data
      * @param mimeType MIME type of the audio (e.g. "audio/mp4", "audio/aac")
      * @param languageCode Language code (e.g., "zh-CN", "en-US")
      * @return Transcription result
      */
     suspend fun transcribeAudioFile(audioData: ByteArray, mimeType: String, languageCode: String = "zh-CN"): SpeechResult {
-        return transcribe(audioData, languageCode)
+        return SpeechResult.Error(
+            message = "Encoded audio ($mimeType) is not supported by ${provider.name}",
+            errorCode = SpeechErrorCode.NOT_SUPPORTED
+        )
     }
     
     /**

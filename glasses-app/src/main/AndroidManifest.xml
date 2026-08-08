@@ -41,6 +41,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
     <!-- Rokid 系統權限 -->
     <uses-permission android:name="com.rokid.permission.GLASS_CONTROL" />
@@ -79,7 +80,8 @@
         <service
             android:name=".service.VoiceTriggerService"
             android:enabled="true"
-            android:exported="true">
+            android:exported="true"
+            android:permission="com.rokid.permission.GLASS_CONTROL">
             <intent-filter>
                 <action android:name="com.rokid.action.VOICE_COMMAND" />
             </intent-filter>

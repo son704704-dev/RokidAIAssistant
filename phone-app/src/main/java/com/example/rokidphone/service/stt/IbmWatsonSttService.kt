@@ -100,7 +100,7 @@ class IbmWatsonSttService(
 
                         override fun onMessage(webSocket: WebSocket, text: String) {
                             try {
-                                Log.d(TAG, "Received message: $text")
+                                Log.d(TAG, "Received ${text.length}-character IBM message")
                                 val json = JSONObject(text)
                                 
                                 when {
@@ -115,8 +115,13 @@ class IbmWatsonSttService(
                                                 if (alternatives.length() > 0) {
                                                     val transcript = alternatives.getJSONObject(0)
                                                         .getString("transcript")
-                                                    finalTranscript = transcript.trim()
-                                                    Log.d(TAG, "Final transcript: $finalTranscript")
+                                                    finalTranscript = listOf(
+                                                        finalTranscript,
+                                                        transcript.trim()
+                                                    ).filter { it.isNotBlank() }.joinToString(" ")
+                                                    Log.d(TAG, "Final IBM transcript (${finalTranscript.length} characters)")
+                                                    webSocket.close(1000, "Final result received")
+                                                    latch.countDown()
                                                 }
                                             }
                                         }
@@ -138,6 +143,8 @@ class IbmWatsonSttService(
                             } catch (e: Exception) {
                                 Log.e(TAG, "Error parsing message", e)
                                 error = e
+                                webSocket.close(1000, "Parse error")
+                                latch.countDown()
                             }
                         }
 
@@ -237,7 +244,7 @@ class IbmWatsonSttService(
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     val json = JSONObject(response.body?.string() ?: "")
-                    json.optString("access_token", null)
+                    json.optString("access_token").takeIf { it.isNotBlank() }
                 } else {
                     Log.e(TAG, "Failed to get access token: ${response.code}")
                     null
@@ -254,6 +261,8 @@ class IbmWatsonSttService(
      */
     private fun buildWebSocketUrl(model: String): String {
         val baseUrl = serviceUrl.removeSuffix("/")
+            .replaceFirst(Regex("^https://", RegexOption.IGNORE_CASE), "wss://")
+            .replaceFirst(Regex("^http://", RegexOption.IGNORE_CASE), "ws://")
         return "$baseUrl/v1/recognize?model=$model"
     }
 }
