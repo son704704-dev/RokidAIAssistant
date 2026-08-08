@@ -174,4 +174,21 @@ class AiServiceFactoryTest {
             assertThat(service).isNotNull()
         }
     }
+
+    @Test
+    fun `createService returns LocalGemmaService for LOCAL_GEMMA provider`() {
+        // 測試：LOCAL_GEMMA 應建立裝置端 LocalGemmaService（不需 API key）
+        val settings = fullyConfiguredSettings(AiProvider.LOCAL_GEMMA)
+            .copy(aiModelId = "gemma-3n-E2B-it")
+        val service = AiServiceFactory.createService(settings)
+        assertThat(service).isInstanceOf(LocalGemmaService::class.java)
+        assertThat(service.provider).isEqualTo(AiProvider.LOCAL_GEMMA)
+    }
+
+    @Test
+    fun `createTestService returns null for on-device LOCAL_GEMMA provider`() {
+        // 測試：裝置端 provider 沒有可測試的雲端連線端點
+        val service = AiServiceFactory.createTestService(fullyConfiguredSettings(AiProvider.LOCAL_GEMMA))
+        assertThat(service).isNull()
+    }
 }

@@ -78,10 +78,9 @@ object ModelCapabilityResolver {
             ApiProtocol.OPENAI_CHAT_COMPLETIONS,
             ApiProtocol.ANTHROPIC_MESSAGES,
             ApiProtocol.BAIDU_QIANFAN_V2,
-            ApiProtocol.CUSTOM_OPENAI_COMPATIBLE -> true
-            ApiProtocol.GEMINI_LIVE,
-            ApiProtocol.BAIDU_LEGACY_RPC,
-            ApiProtocol.ANYTHING_LLM -> false
+            ApiProtocol.CUSTOM_OPENAI_COMPATIBLE,
+            ApiProtocol.LOCAL_INFERENCE -> true
+            else -> false
         }
         return ModelCapabilities(
             imageInput = provider in providerDefaultVision,

@@ -115,6 +115,13 @@ object AiServiceFactory {
             ApiProtocol.BAIDU_LEGACY_RPC -> throw IllegalStateException(
                 "BAIDU_LEGACY_RPC is not mapped by ProviderRegistry"
             )
+
+            // On-device inference: no credentials, no network. The engine is
+            // supplied lazily; when absent the service degrades gracefully.
+            ApiProtocol.LOCAL_INFERENCE -> LocalGemmaService(
+                modelId = modelId,
+                systemPrompt = systemPrompt
+            )
         }
     }
 
@@ -238,7 +245,8 @@ object AiServiceFactory {
     fun createTestService(settings: ApiSettings): OpenAiCompatibleService? {
         return when (settings.aiProvider) {
             AiProvider.GEMINI, AiProvider.ANTHROPIC,
-            AiProvider.GEMINI_LIVE, AiProvider.ANYTHINGLLM -> null // Not OpenAI-compatible
+            AiProvider.GEMINI_LIVE, AiProvider.ANYTHINGLLM,
+            AiProvider.LOCAL_GEMMA -> null // Not OpenAI-compatible
 
             AiProvider.BAIDU -> if (settings.isBaiduLegacyMode()) {
                 null // Legacy OAuth flow: use createBaiduTestService

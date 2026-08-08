@@ -189,6 +189,20 @@ object ProviderRegistry {
             fallbackDocSource = "AnythingLLM developer API docs"
         ),
         ProviderDescriptor(
+            id = AiProvider.LOCAL_GEMMA,
+            displayName = "On-Device Gemma",
+            defaultBaseUrl = "local://gemma/",
+            protocol = ApiProtocol.LOCAL_INFERENCE,
+            // No remote models endpoint: installed models are discovered by
+            // scanning the app-private model directory; verified defaults come
+            // from the fallback catalog.
+            catalogFormat = CatalogFormat.NONE,
+            modelsEndpointPath = null,
+            requiresApiKey = false,
+            allowsCustomBaseUrl = false,
+            fallbackDocSource = "Google AI Edge / MediaPipe LLM Inference - Gemma models"
+        ),
+        ProviderDescriptor(
             id = AiProvider.CUSTOM,
             displayName = "Custom (OpenAI-compatible)",
             defaultBaseUrl = "http://localhost:11434/v1/",

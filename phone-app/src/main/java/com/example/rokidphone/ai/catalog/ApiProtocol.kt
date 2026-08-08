@@ -33,7 +33,14 @@ enum class ApiProtocol {
     ANYTHING_LLM,
 
     /** User-supplied OpenAI-compatible endpoint (Ollama, LM Studio, vLLM...). */
-    CUSTOM_OPENAI_COMPATIBLE
+    CUSTOM_OPENAI_COMPATIBLE,
+
+    /**
+     * On-device inference: no wire protocol, no network. Handled by a local
+     * engine adapter (e.g. MediaPipe LLM Inference / llama.cpp) in the service
+     * layer. Uses [CatalogFormat.NONE] plus a local model-file scan.
+     */
+    LOCAL_INFERENCE
 }
 
 /** Format of the provider's Models-list endpoint response. */

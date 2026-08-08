@@ -143,6 +143,18 @@ enum class AiProvider(
         supportsSpeech = false,
         supportsVision = false
     ),
+    LOCAL_GEMMA(
+        displayNameResId = R.string.provider_local_gemma,
+        description = "On-device Gemma inference (no cloud, no API key)",
+        website = "https://ai.google.dev/gemma",
+        // Not a network endpoint: local models are read from the app-private
+        // model directory. A non-empty sentinel keeps registry invariants
+        // (every provider must expose a non-empty base URL) satisfied.
+        defaultBaseUrl = "local://gemma/",
+        isOpenAiCompatible = false,
+        supportsSpeech = false,
+        supportsVision = false
+    ),
     CUSTOM(
         displayNameResId = R.string.provider_custom,
         description = "OpenAI-compatible API (Ollama, LM Studio, etc.)",
@@ -175,9 +187,17 @@ enum class AiProvider(
     fun allowsCustomBaseUrl(): Boolean = this == CUSTOM
     
     /**
-     * Check if this provider requires API key
+     * Check if this provider requires API key.
+     *
+     * [CUSTOM] talks to a user-hosted endpoint that may be open, and
+     * [LOCAL_GEMMA] runs entirely on-device, so neither needs a cloud key.
      */
-    fun requiresApiKey(): Boolean = this != CUSTOM
+    fun requiresApiKey(): Boolean = this != CUSTOM && this != LOCAL_GEMMA
+
+    /**
+     * True when inference runs on-device with no network dependency.
+     */
+    fun isLocalInference(): Boolean = this == LOCAL_GEMMA
     
     /**
      * Check if this provider requires a secret key (Baidu OAuth)
@@ -484,6 +504,7 @@ data class ApiSettings(
             AiProvider.MISTRAL -> mistralApiKey
             AiProvider.GEMINI_LIVE -> geminiApiKey  // Shares Gemini API key
             AiProvider.ANYTHINGLLM -> anythingllmApiKey
+            AiProvider.LOCAL_GEMMA -> ""  // On-device: no API key
             AiProvider.CUSTOM -> customApiKey
         }
     }
@@ -559,6 +580,9 @@ data class ApiSettings(
                 else baiduQianfanApiKey.isNotBlank()
             AiProvider.ANYTHINGLLM ->
                 anythingllmServerUrl.isNotBlank() && anythingllmApiKey.isNotBlank() && anythingllmWorkspaceSlug.isNotBlank()
+            // On-device provider needs no cloud credentials; the service layer
+            // surfaces a clear error if no model file is actually installed.
+            AiProvider.LOCAL_GEMMA -> true
             else -> getCurrentApiKey().isNotBlank()
         }
     }
@@ -577,6 +601,7 @@ data class ApiSettings(
             AiProvider.GEMINI_LIVE -> geminiApiKey.isNotBlank()  // Shares Gemini API key
             AiProvider.ANYTHINGLLM ->
                 anythingllmServerUrl.isNotBlank() && anythingllmApiKey.isNotBlank() && anythingllmWorkspaceSlug.isNotBlank()
+            AiProvider.LOCAL_GEMMA -> true  // On-device: no cloud credential needed
             else -> getApiKeyForProvider(provider).isNotBlank()
         }
     }
@@ -666,6 +691,10 @@ fun ApiSettings.validateForChat(): SettingsValidationResult {
             SettingsValidationResult.InvalidConfiguration(
                 "Please configure server URL, API key, and workspace slug for AnythingLLM"
             )
+        // On-device inference requires no API key; a missing model file is
+        // reported later by LocalGemmaService, not as a missing-key error.
+        aiProvider == AiProvider.LOCAL_GEMMA ->
+            SettingsValidationResult.Valid
         getCurrentApiKey().isBlank() ->
             SettingsValidationResult.MissingApiKey(aiProvider)
         else -> SettingsValidationResult.Valid

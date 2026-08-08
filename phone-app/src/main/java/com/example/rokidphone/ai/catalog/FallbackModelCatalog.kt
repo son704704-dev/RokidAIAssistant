@@ -408,6 +408,30 @@ object FallbackModelCatalog {
         )
     )
 
+    // ==================== On-Device Gemma (local inference) ====================
+    // Capabilities are intentionally conservative: text in/out with streaming.
+    // These entries describe models the user can install locally; the actual
+    // download/placement is managed outside the fallback catalog.
+    private fun localGemmaCaps(context: Long) = ModelCapabilities(
+        textInput = true,
+        textOutput = true,
+        streaming = true,
+        maxContextTokens = context
+    )
+
+    val localGemmaModels = listOf(
+        m(
+            "gemma-3n-E2B-it", "Gemma 3n E2B (on-device)", AiProvider.LOCAL_GEMMA,
+            localGemmaCaps(context = 32_768L),
+            description = "Compact on-device Gemma (E2B); lowest RAM footprint"
+        ),
+        m(
+            "gemma-3n-E4B-it", "Gemma 3n E4B (on-device)", AiProvider.LOCAL_GEMMA,
+            localGemmaCaps(context = 32_768L),
+            description = "Larger on-device Gemma (E4B); needs more RAM/storage"
+        )
+    )
+
     /** Verified fallback list for a provider (chat/live models only — never STT/TTS/image-gen). */
     fun modelsFor(provider: AiProvider): List<ModelInfo> = when (provider) {
         AiProvider.GEMINI -> geminiModels
@@ -424,6 +448,7 @@ object FallbackModelCatalog {
         AiProvider.MISTRAL -> mistralModels
         AiProvider.GEMINI_LIVE -> geminiLiveModels
         AiProvider.ANYTHINGLLM -> anythingllmModels
+        AiProvider.LOCAL_GEMMA -> localGemmaModels
         AiProvider.CUSTOM -> customModels
     }
 

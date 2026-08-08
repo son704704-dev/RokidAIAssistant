@@ -151,6 +151,7 @@ class ProviderManager private constructor(
             AiProvider.MISTRAL -> settingsRepository.updateMistralApiKey(apiKey)
             AiProvider.ANYTHINGLLM -> settingsRepository.updateAnythingLlmApiKey(apiKey)
             AiProvider.GEMINI_LIVE -> settingsRepository.updateGeminiApiKey(apiKey)  // Shares Gemini API key
+            AiProvider.LOCAL_GEMMA -> { /* On-device: no API key to store */ }
             AiProvider.CUSTOM -> settingsRepository.updateCustomApiKey(apiKey)
         }
         cachedService = null
@@ -243,6 +244,14 @@ class ProviderManager private constructor(
             AiProvider.GEMINI_LIVE -> ProviderSetting.Gemini(
                 apiKey = settings.geminiApiKey,
                 modelId = settings.aiModelId
+            )
+            // On-device provider has no dedicated ProviderSetting type; it
+            // carries no credentials, so reuse the keyless Custom shape with
+            // the local model ID for the active-provider StateFlow.
+            AiProvider.LOCAL_GEMMA -> ProviderSetting.Custom(
+                apiKey = "",
+                modelId = settings.getModelIdForProvider(AiProvider.LOCAL_GEMMA),
+                baseUrl = AiProvider.LOCAL_GEMMA.defaultBaseUrl
             )
         }
     }

@@ -1417,8 +1417,11 @@ class PhoneAIService : Service() {
      * Create AI service
      */
     private fun createAiService(settings: ApiSettings): AiServiceProvider {
-        // If no API key configured, notify user
-        val effectiveSettings = if (settings.getCurrentApiKey().isBlank()) {
+        // Providers that need no cloud key (on-device inference, self-hosted
+        // custom endpoints) must never be silently switched to cloud Gemini.
+        val effectiveSettings = if (settings.aiProvider.requiresApiKey() &&
+            settings.getCurrentApiKey().isBlank()
+        ) {
             // Check if BuildConfig has a valid Gemini API key as fallback
             if (BuildConfig.GEMINI_API_KEY.isNotBlank()) {
                 Log.d(TAG, "No API key for ${settings.aiProvider}, using development fallback")
@@ -1565,7 +1568,9 @@ class PhoneAIService : Service() {
         }
         
         // Check if provider has API key
-        if (migratedSettings.getCurrentApiKey().isBlank()) {
+        if (migratedSettings.aiProvider.requiresApiKey() &&
+            migratedSettings.getCurrentApiKey().isBlank()
+        ) {
             Log.w(TAG, "No API key for ${migratedSettings.aiProvider}, checking for fallback")
             // Try to use provider that has API key
             for (provider in AiProvider.entries) {

@@ -255,6 +255,20 @@ class ModelCatalogParsersTest {
         )
     }
 
+    // ==================== On-device Gemma (local inference) ====================
+
+    @Test
+    fun `LOCAL_GEMMA descriptor is keyless local-inference with no remote catalog`() {
+        val descriptor = ProviderRegistry.descriptorFor(AiProvider.LOCAL_GEMMA)
+        assertThat(descriptor.protocol).isEqualTo(ApiProtocol.LOCAL_INFERENCE)
+        assertThat(descriptor.catalogFormat).isEqualTo(CatalogFormat.NONE)
+        assertThat(descriptor.requiresApiKey).isFalse()
+        assertThat(descriptor.hasRemoteCatalog).isFalse()
+
+        val fallbackIds = FallbackModelCatalog.modelsFor(AiProvider.LOCAL_GEMMA).map { it.id }
+        assertThat(fallbackIds).containsAtLeast("gemma-3n-E2B-it", "gemma-3n-E4B-it")
+    }
+
     // ==================== Fallback catalog invariants ====================
 
     @Test
