@@ -24,8 +24,9 @@ class PhoneApplication : Application() {
                 setShowBadge(false)
             }
             
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+            // getSystemService can return null; don't crash at startup
+            getSystemService(NotificationManager::class.java)
+                ?.createNotificationChannel(channel)
         }
     }
 }

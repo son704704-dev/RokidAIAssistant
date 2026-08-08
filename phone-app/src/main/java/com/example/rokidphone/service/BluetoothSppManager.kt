@@ -53,12 +53,16 @@ class BluetoothSppManager(
     companion object {
         private const val TAG = "BluetoothSppManager"
         private const val SERVICE_NAME = "RokidAIAssistant"
-        // SPP UUID
-        private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         // Custom UUID (to identify our application)
         private val APP_UUID: UUID = UUID.fromString("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
         
         private const val BUFFER_SIZE = 8192
+        
+        // JSON message terminator on the text channel
+        private const val NEWLINE_BYTE: Byte = 0x0A // '\n'
+        
+        // Bytes needed to read a DATA packet's payload length: [Type:1][DataLength:2]
+        private const val DATA_LENGTH_PREFIX_SIZE = 3
         
         // Binary packet header bytes (photo transfer protocol)
         private val PHOTO_PACKET_TYPES = setOf<Byte>(
@@ -71,9 +75,15 @@ class BluetoothSppManager(
     private val bluetoothAdapter: BluetoothAdapter? =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     
+    // Mutated from the accept job, read job, sendMessage coroutines and
+    // disconnect() on arbitrary threads: @Volatile gives visibility guarantees.
+    @Volatile
     private var serverSocket: BluetoothServerSocket? = null
+    @Volatile
     private var clientSocket: BluetoothSocket? = null
+    @Volatile
     private var inputStream: InputStream? = null
+    @Volatile
     private var outputStream: OutputStream? = null
     
     private var acceptJob: Job? = null
@@ -108,14 +118,20 @@ class BluetoothSppManager(
     val receivedPhoto: SharedFlow<ReceivedPhoto> = photoReceiver.receivedPhoto
     
     // Binary packet buffer for photo transfer (use ByteArrayOutputStream for efficiency)
-    private var binaryBuffer = ByteArrayOutputStream(8192)
+    private val binaryBuffer = ByteArrayOutputStream(BUFFER_SIZE)
+    @Volatile
     private var expectedPacketLength: Int = 0
+    @Volatile
     private var parsingBinaryPacket = false
     
     // Flag to prevent duplicate disconnect
     @Volatile
     private var isDisconnecting = false
     private val disconnectLock = Any()
+    
+    // Serialises writes to outputStream; the photo receiver writes ACK/RETRY
+    // frames to the same stream and must not interleave with JSON messages.
+    private val writeLock = Any()
 
     /**
      * Check Bluetooth permission
@@ -157,13 +173,18 @@ class BluetoothSppManager(
         
         acceptJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
+                // Local reference: the finally block below must only ever close
+                // the socket created by THIS iteration. Closing the field could
+                // destroy a NEWER server socket created after this job was
+                // cancelled by stopListening().
+                var localServerSocket: BluetoothServerSocket? = null
                 try {
                     _connectionState.value = BluetoothConnectionState.LISTENING
                     Log.d(TAG, "Starting Bluetooth server...")
                     
                     // Use insecure RFCOMM for better compatibility
                     // This works better across different Android versions and devices
-                    serverSocket = try {
+                    localServerSocket = try {
                         bluetoothAdapter.listenUsingInsecureRfcommWithServiceRecord(
                             SERVICE_NAME, APP_UUID
                         ).also {
@@ -177,15 +198,27 @@ class BluetoothSppManager(
                             Log.d(TAG, "Server socket created (secure mode)")
                         }
                     }
+                    serverSocket = localServerSocket
                     
                     Log.d(TAG, "Waiting for connection...")
                     
                     // Wait for connection
-                    val socket = serverSocket?.accept()
+                    val socket = localServerSocket.accept()
                     
                     if (socket != null) {
-                        Log.d(TAG, "Connection accepted from: ${socket.remoteDevice.name}")
-                        handleConnection(socket)
+                        Log.d(TAG, "Connection accepted from: ${safeRemoteDeviceName(socket)}")
+                        try {
+                            handleConnection(socket)
+                        } catch (e: Exception) {
+                            // Never leak an accepted socket on setup failure
+                            Log.e(TAG, "Failed to set up accepted connection", e)
+                            try {
+                                socket.close()
+                            } catch (closeError: IOException) {
+                                Log.w(TAG, "Error closing failed socket: ${closeError.message}")
+                            }
+                            throw e
+                        }
                         
                         // Wait for this connection to be disconnected before accepting new ones
                         // The read job will handle disconnection detection
@@ -214,19 +247,34 @@ class BluetoothSppManager(
                     }
                 } catch (e: CancellationException) {
                     Log.d(TAG, "Accept job cancelled")
-                    break
+                    throw e
                 } finally {
-                    // Close server socket to free up the port
+                    // Close only THIS iteration's server socket to free up the port
                     try {
-                        serverSocket?.close()
+                        localServerSocket?.close()
                     } catch (e: IOException) {
                         Log.w(TAG, "Error closing server socket: ${e.message}")
                     }
-                    serverSocket = null
+                    if (serverSocket === localServerSocket) {
+                        serverSocket = null
+                    }
                 }
             }
             
             Log.d(TAG, "Accept loop exited")
+        }
+    }
+    
+    /**
+     * Read the remote device name safely: it requires BLUETOOTH_CONNECT and can
+     * throw SecurityException, which must not kill the accept loop.
+     */
+    private fun safeRemoteDeviceName(socket: BluetoothSocket): String {
+        return try {
+            socket.remoteDevice?.name ?: "Unknown device"
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Cannot read remote device name (missing permission?)", e)
+            "Unknown device"
         }
     }
     
@@ -329,6 +377,28 @@ class BluetoothSppManager(
             while (offset < data.size) {
                 // Check if we're continuing to parse a binary photo packet
                 if (parsingBinaryPacket) {
+                    // If the packet length is still unknown (a DATA header was
+                    // split across reads), first buffer enough bytes to read it.
+                    if (expectedPacketLength <= 0) {
+                        val need = DATA_LENGTH_PREFIX_SIZE - binaryBuffer.size()
+                        if (need > 0) {
+                            val take = minOf(need, data.size - offset)
+                            binaryBuffer.write(data, offset, take)
+                            offset += take
+                        }
+                        if (binaryBuffer.size() < DATA_LENGTH_PREFIX_SIZE) {
+                            continue // Still not enough bytes; wait for the next read
+                        }
+                        val header = binaryBuffer.toByteArray()
+                        expectedPacketLength = getPacketLength(header[0], header, 0)
+                        if (expectedPacketLength <= 0) {
+                            Log.e(TAG, "Could not resolve binary packet length, dropping buffered bytes")
+                            binaryBuffer.reset()
+                            parsingBinaryPacket = false
+                            continue
+                        }
+                    }
+                    
                     val remaining = expectedPacketLength - binaryBuffer.size()
                     val bytesToRead = minOf(remaining, data.size - offset)
                     // Write bytes in bulk (much more efficient than byte-by-byte)
@@ -355,35 +425,59 @@ class BluetoothSppManager(
                     // This is a binary photo packet
                     val packetLength = getPacketLength(firstByte, data, offset)
                     
-                    if (packetLength > 0) {
-                        // Start collecting binary packet
+                    if (packetLength <= 0) {
+                        // The DATA header is split across reads: park the
+                        // available header bytes and wait for the rest instead
+                        // of guessing a length and desynchronising the stream.
                         binaryBuffer.reset()
-                        expectedPacketLength = packetLength
+                        expectedPacketLength = 0
                         parsingBinaryPacket = true
-                        
-                        val bytesAvailable = data.size - offset
-                        val bytesToRead = minOf(packetLength, bytesAvailable)
-                        
-                        // Write bytes in bulk (much more efficient than byte-by-byte)
-                        binaryBuffer.write(data, offset, bytesToRead)
-                        offset += bytesToRead
-                        
-                        if (binaryBuffer.size() >= packetLength) {
-                            // Complete packet in this buffer
-                            val packet = binaryBuffer.toByteArray()
-                            binaryBuffer.reset()
-                            parsingBinaryPacket = false
-                            expectedPacketLength = 0
-                            
-                            photoReceiver.processPacket(packet)
-                        }
+                        val take = minOf(DATA_LENGTH_PREFIX_SIZE, data.size - offset)
+                        binaryBuffer.write(data, offset, take)
+                        offset += take
                         continue
                     }
+                    
+                    // Start collecting binary packet
+                    binaryBuffer.reset()
+                    expectedPacketLength = packetLength
+                    parsingBinaryPacket = true
+                    
+                    val bytesAvailable = data.size - offset
+                    val bytesToRead = minOf(packetLength, bytesAvailable)
+                    
+                    // Write bytes in bulk (much more efficient than byte-by-byte)
+                    binaryBuffer.write(data, offset, bytesToRead)
+                    offset += bytesToRead
+                    
+                    if (binaryBuffer.size() >= packetLength) {
+                        // Complete packet in this buffer
+                        val packet = binaryBuffer.toByteArray()
+                        binaryBuffer.reset()
+                        parsingBinaryPacket = false
+                        expectedPacketLength = 0
+                        
+                        photoReceiver.processPacket(packet)
+                    }
+                    continue
                 }
                 
-                // Regular JSON message processing
-                val text = String(data, offset, data.size - offset, Charsets.UTF_8)
-                offset = data.size // Consumed all remaining bytes
+                // Regular JSON message processing: consume text only up to the
+                // next newline (inclusive) or the start of a binary packet —
+                // never blindly consume the rest of the buffer, because a binary
+                // photo packet may follow a JSON message within a single read().
+                var end = offset
+                while (end < data.size &&
+                    data[end] != NEWLINE_BYTE &&
+                    !(end > offset && data[end] in PHOTO_PACKET_TYPES)
+                ) {
+                    end++
+                }
+                if (end < data.size && data[end] == NEWLINE_BYTE) {
+                    end++ // Include the newline terminator
+                }
+                val text = String(data, offset, end - offset, Charsets.UTF_8)
+                offset = end
                 messageBuffer.append(text)
             }
             
@@ -428,8 +522,10 @@ class BluetoothSppManager(
                                     Log.d(TAG, "Using audio from VOICE_END message: ${messageBinaryData.size} bytes")
                                     messageBinaryData
                                 } else {
-                                    // Use accumulated audio data
-                                    audioBuffer.flatMap { it.toList() }.toByteArray()
+                                    // Use accumulated audio data (bulk copy, no per-byte boxing)
+                                    ByteArrayOutputStream(audioBuffer.sumOf { it.size })
+                                        .apply { audioBuffer.forEach { write(it) } }
+                                        .toByteArray()
                                 }
                                 audioBuffer.clear()
                                 Log.d(TAG, "Voice recording ended, total: ${fullAudio.size} bytes")
@@ -455,7 +551,9 @@ class BluetoothSppManager(
     
     /**
      * Determines the expected length of a binary photo packet.
-     * Returns 0 if length cannot be determined from available data.
+     * Returns 0 if the length cannot be determined from the available data
+     * (e.g. a DATA header split across reads) — the caller must keep the
+     * partial bytes pending instead of assuming a length.
      */
     private fun getPacketLength(packetType: Byte, data: ByteArray, offset: Int): Int {
         return when (packetType) {
@@ -466,14 +564,15 @@ class BluetoothSppManager(
             PhotoTransferConstants.PACKET_TYPE_DATA -> {
                 // DATA: [Type:1][DataLength:2][ChunkIndex:4][CRC32:4][Payload:n]
                 // We need at least 3 bytes to read DataLength
-                if (offset + 3 <= data.size) {
+                if (offset + DATA_LENGTH_PREFIX_SIZE <= data.size) {
                     val dataLength = ByteBuffer.wrap(data, offset + 1, 2)
                         .order(ByteOrder.BIG_ENDIAN)
                         .short.toInt() and 0xFFFF
                     PhotoTransferConstants.DATA_HEADER_SIZE + dataLength
                 } else {
-                    // Not enough data to determine length, assume minimum header
-                    PhotoTransferConstants.DATA_HEADER_SIZE
+                    // Not enough data to determine the length: report "unknown"
+                    // so the caller keeps the partial header bytes pending.
+                    0
                 }
             }
             PhotoTransferConstants.PACKET_TYPE_END -> {
@@ -496,8 +595,19 @@ class BluetoothSppManager(
                 }
                 
                 val json = message.toJson() + "\n"
-                outputStream?.write(json.toByteArray(Charsets.UTF_8))
-                outputStream?.flush()
+                
+                // Capture the stream into a local (a concurrent disconnect can
+                // null the field between calls) and serialise the write: the
+                // photo receiver writes ACK/RETRY frames to the same stream.
+                val stream = outputStream
+                if (stream == null) {
+                    Log.w(TAG, "Output stream unavailable, cannot send message")
+                    return@withContext false
+                }
+                synchronized(writeLock) {
+                    stream.write(json.toByteArray(Charsets.UTF_8))
+                    stream.flush()
+                }
                 
                 Log.d(TAG, "Sent message: ${message.type}")
                 true
@@ -578,12 +688,20 @@ class BluetoothSppManager(
      * @param restartListening Whether to restart listening after disconnect (default true)
      */
     fun disconnect(restartListening: Boolean = true) {
-        synchronized(disconnectLock) {
+        var ownsFlag = false
+        val scheduleRestart = synchronized(disconnectLock) {
             if (isDisconnecting) {
-                Log.d(TAG, "Already disconnecting, skipping...")
-                return
+                // A teardown is already in flight (e.g. from the read thread).
+                // Do NOT drop this request: run our own (idempotent) teardown,
+                // but leave the flag and the listener restart to the in-flight
+                // operation so we don't schedule duplicate restarts.
+                Log.d(TAG, "Disconnect already in progress; running teardown anyway")
+                false
+            } else {
+                isDisconnecting = true
+                ownsFlag = true
+                restartListening
             }
-            isDisconnecting = true
         }
         
         Log.d(TAG, "Disconnecting... (restartListening=$restartListening)")
@@ -620,13 +738,12 @@ class BluetoothSppManager(
         
         // Stop old server socket and restart listening with delay
         // Reset flag only AFTER restart completes to prevent race conditions
-        if (restartListening) {
+        if (scheduleRestart) {
             scope.launch(Dispatchers.IO) {
                 try {
                     delay(500) // Wait for socket cleanup
-                    stopListening()
-                    delay(200) // Small delay between stop and start
                     Log.d(TAG, "Restarting Bluetooth server after disconnect...")
+                    // startListening() stops the previous listener first
                     startListening()
                 } finally {
                     // Reset flag after restart completes
@@ -635,8 +752,9 @@ class BluetoothSppManager(
                     }
                 }
             }
-        } else {
-            // If not restarting, reset flag immediately
+        } else if (ownsFlag) {
+            // Not restarting: reset the flag immediately (only the operation
+            // that set the flag may clear it)
             synchronized(disconnectLock) {
                 isDisconnecting = false
             }

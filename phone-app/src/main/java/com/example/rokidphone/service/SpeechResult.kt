@@ -1,5 +1,7 @@
 package com.example.rokidphone.service
 
+import android.content.Context
+
 /**
  * Speech error codes for localization support
  */
@@ -40,10 +42,15 @@ enum class SpeechErrorCode {
     }
     
     /**
-     * Check if this error code uses a format string (has %s placeholder)
+     * Check if this error code uses a format string (has %s placeholder).
+     * Must stay in sync with the resource definitions in strings.xml —
+     * NETWORK_ERROR and UNKNOWN map to the format string `stt_error_transcription_error`,
+     * so they require a detail argument too.
      */
-    fun requiresDetail(): Boolean {
-        return this in listOf(TRANSCRIPTION_ERROR, PROVIDER_NOT_SUPPORTED, RECOGNITION_FAILED)
+    fun requiresDetail(): Boolean = when (this) {
+        TRANSCRIPTION_ERROR, PROVIDER_NOT_SUPPORTED, RECOGNITION_FAILED,
+        NETWORK_ERROR, UNKNOWN -> true
+        else -> false
     }
 }
 
@@ -53,22 +60,25 @@ enum class SpeechErrorCode {
 sealed class SpeechResult {
     data class Success(val text: String) : SpeechResult()
     data class Error(
-        val message: String, 
-        val isNetworkError: Boolean = false,
+        val message: String,
         val errorCode: SpeechErrorCode? = null,
         val errorDetail: String? = null
     ) : SpeechResult() {
+        /** Derived from [errorCode] so contradictory states are impossible. */
+        val isNetworkError: Boolean
+            get() = errorCode == SpeechErrorCode.NETWORK_ERROR
+
         /**
          * Get localized error message using Context
          */
-        fun getLocalizedMessage(context: android.content.Context): String {
+        fun getLocalizedMessage(context: Context): String {
             return when {
                 errorCode != null -> {
                     val resId = errorCode.getStringResId()
-                    if (errorDetail != null && errorCode.requiresDetail()) {
-                        context.getString(resId, errorDetail)
-                    } else if (errorCode.requiresDetail()) {
-                        context.getString(resId, "")
+                    if (errorCode.requiresDetail()) {
+                        // Fall back to `message` so the message never ends with a
+                        // dangling "...: " when no detail was supplied.
+                        context.getString(resId, errorDetail ?: message)
                     } else {
                         context.getString(resId)
                     }

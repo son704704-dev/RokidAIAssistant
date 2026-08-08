@@ -26,6 +26,7 @@ enum class ApiProtocol {
     BAIDU_QIANFAN_V2,
 
     /** Baidu legacy RPC (API Key + Secret Key OAuth). Kept for migration only. */
+    @Deprecated("Legacy Baidu RPC auth; migrate providers to BAIDU_QIANFAN_V2.")
     BAIDU_LEGACY_RPC,
 
     /** AnythingLLM workspace chat API. */

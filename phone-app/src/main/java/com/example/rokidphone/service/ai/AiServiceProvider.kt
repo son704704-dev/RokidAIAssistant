@@ -1,7 +1,9 @@
 package com.example.rokidphone.service.ai
 
+import com.example.rokidphone.ai.catalog.ProviderErrorKind
 import com.example.rokidphone.data.AiProvider
 import com.example.rokidphone.service.SpeechResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -46,7 +48,14 @@ interface AiServiceProvider {
      * override it with a real SSE/WebSocket implementation.
      */
     fun streamChat(userMessage: String): Flow<AiStreamEvent> = flow {
-        val text = chat(userMessage)
+        val text = try {
+            chat(userMessage)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            emit(AiStreamEvent.Error(ProviderErrorKind.UNKNOWN, e.message ?: "chat failed"))
+            return@flow
+        }
         emit(AiStreamEvent.TextDelta(text))
         emit(AiStreamEvent.Completed(text))
     }
@@ -67,7 +76,12 @@ interface AiServiceProvider {
     suspend fun analyzeImage(imageData: ByteArray, prompt: String = "Please describe this image"): String
 
     /**
-     * Clear conversation history
+     * Clear conversation history.
+     *
+     * Concurrency contract: [chat]/[streamChat] mutate the same conversation
+     * state from coroutines, so implementations MUST make clearing safe to
+     * call while a request/stream is in flight (e.g. guard history with a
+     * mutex); a clear issued mid-stream takes effect for subsequent calls.
      */
     fun clearHistory()
 }

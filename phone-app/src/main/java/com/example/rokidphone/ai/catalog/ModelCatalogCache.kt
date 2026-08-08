@@ -1,9 +1,11 @@
 package com.example.rokidphone.ai.catalog
 
 import android.content.Context
+import android.util.Log
 import com.example.rokidphone.data.AiProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
 /** A cached catalog page for one provider. */
 data class CachedCatalog(
@@ -27,7 +29,8 @@ class InMemoryModelCatalogCache : ModelCatalogCache {
 
     @Synchronized
     override fun write(provider: AiProvider, catalog: CachedCatalog) {
-        data[provider] = catalog
+        // Defensive copy: the caller may keep and mutate the supplied list.
+        data[provider] = catalog.copy(models = catalog.models.toList())
     }
 
     @Synchronized
@@ -42,7 +45,9 @@ class InMemoryModelCatalogCache : ModelCatalogCache {
  */
 class SharedPrefsModelCatalogCache(context: Context) : ModelCatalogCache {
 
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    // Normalise to the application context so a retained cache cannot leak an
+    // Activity/Fragment context passed by a caller.
+    private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     override fun read(provider: AiProvider): CachedCatalog? {
         val raw = prefs.getString(keyFor(provider), null) ?: return null
@@ -51,10 +56,14 @@ class SharedPrefsModelCatalogCache(context: Context) : ModelCatalogCache {
             val models = mutableListOf<ModelInfo>()
             val arr = json.optJSONArray("models") ?: return null
             for (i in 0 until arr.length()) {
-                arr.optJSONObject(i)?.let { models += deserializeModel(it, provider) }
+                arr.optJSONObject(i)?.let { obj ->
+                    deserializeModel(obj, provider)?.let { models += it }
+                }
             }
             CachedCatalog(models, json.optLong("fetchedAt", 0L))
         } catch (e: Exception) {
+            Log.w(TAG, "Corrupt catalog cache for $provider, dropping entry", e)
+            clear(provider)
             null
         }
     }
@@ -72,7 +81,7 @@ class SharedPrefsModelCatalogCache(context: Context) : ModelCatalogCache {
         prefs.edit().remove(keyFor(provider)).apply()
     }
 
-    private fun keyFor(provider: AiProvider) = "catalog_${provider.name.lowercase()}"
+    private fun keyFor(provider: AiProvider) = "catalog_${provider.name.lowercase(Locale.ROOT)}"
 
     private fun serializeModel(model: ModelInfo): JSONObject {
         val caps = model.capabilities
@@ -82,6 +91,8 @@ class SharedPrefsModelCatalogCache(context: Context) : ModelCatalogCache {
             .put("status", model.status.name)
             .put("description", model.description)
             .put("capabilities", JSONObject().apply {
+                put("textInput", caps.textInput)
+                put("textOutput", caps.textOutput)
                 put("imageInput", caps.imageInput)
                 put("audioInput", caps.audioInput)
                 put("audioOutput", caps.audioOutput)
@@ -90,33 +101,40 @@ class SharedPrefsModelCatalogCache(context: Context) : ModelCatalogCache {
                 put("structuredOutput", caps.structuredOutput)
                 put("reasoning", caps.reasoning)
                 put("realtime", caps.realtime)
+                put("transcription", caps.transcription)
                 caps.maxContextTokens?.let { put("maxContextTokens", it) }
                 caps.maxOutputTokens?.let { put("maxOutputTokens", it) }
             })
     }
 
-    private fun deserializeModel(json: JSONObject, provider: AiProvider): ModelInfo {
+    /** Returns null for entries that must be dropped (e.g. missing/blank id). */
+    private fun deserializeModel(json: JSONObject, provider: AiProvider): ModelInfo? {
+        val id = json.optString("id")
+        if (id.isBlank()) return null
         val capsJson = json.optJSONObject("capabilities") ?: JSONObject()
         val caps = ModelCapabilities(
+            textInput = capsJson.optBoolean("textInput", true),
+            textOutput = capsJson.optBoolean("textOutput", true),
             imageInput = capsJson.optBoolean("imageInput"),
             audioInput = capsJson.optBoolean("audioInput"),
             audioOutput = capsJson.optBoolean("audioOutput"),
-            streaming = capsJson.optBoolean("streaming", true),
+            streaming = capsJson.optBoolean("streaming"),
             toolCalling = capsJson.optBoolean("toolCalling"),
             structuredOutput = capsJson.optBoolean("structuredOutput"),
             reasoning = capsJson.optBoolean("reasoning"),
             realtime = capsJson.optBoolean("realtime"),
-            maxContextTokens = if (capsJson.has("maxContextTokens")) capsJson.optLong("maxContextTokens") else null,
-            maxOutputTokens = if (capsJson.has("maxOutputTokens")) capsJson.optLong("maxOutputTokens") else null
+            transcription = capsJson.optBoolean("transcription"),
+            maxContextTokens = if (!capsJson.isNull("maxContextTokens")) capsJson.optLong("maxContextTokens") else null,
+            maxOutputTokens = if (!capsJson.isNull("maxOutputTokens")) capsJson.optLong("maxOutputTokens") else null
         )
         val status = try {
-            ModelStatus.valueOf(json.optString("status", ModelStatus.STABLE.name))
+            ModelStatus.valueOf(json.optString("status", ModelStatus.UNKNOWN.name))
         } catch (e: Exception) {
-            ModelStatus.STABLE
+            ModelStatus.UNKNOWN
         }
         return ModelInfo(
-            id = json.optString("id"),
-            displayName = json.optString("displayName").ifBlank { json.optString("id") },
+            id = id,
+            displayName = json.optString("displayName").ifBlank { id },
             provider = provider,
             capabilities = caps,
             status = status,
@@ -126,6 +144,7 @@ class SharedPrefsModelCatalogCache(context: Context) : ModelCatalogCache {
     }
 
     companion object {
+        private const val TAG = "ModelCatalogCache"
         private const val PREFS_NAME = "rokid_model_catalog_cache"
     }
 }

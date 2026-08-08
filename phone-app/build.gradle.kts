@@ -215,3 +215,8 @@ dependencies {
     androidTestImplementation(libs.okhttp.mockwebserver)
     androidTestImplementation("androidx.room:room-testing:2.8.4")
 }
+
+// Room schema export location (required for exportSchema = true; commit the JSON schemas).
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}

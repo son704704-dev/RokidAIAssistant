@@ -150,7 +150,7 @@ class ProviderSettingTest {
         val setting = ProviderSetting.AnythingLLM()
         assertThat(setting.id).isEqualTo("anythingllm")
         assertThat(setting.displayName).isEqualTo("AnythingLLM")
-        assertThat(setting.enabled).isTrue()
+        assertThat(setting.enabled).isFalse()
         assertThat(setting.serverUrl).isEmpty()
         assertThat(setting.apiKey).isEmpty()
         assertThat(setting.workspaceSlug).isEmpty()
@@ -204,7 +204,7 @@ class ProviderSettingTest {
         val setting = ProviderSetting.Gemini()
         assertThat(setting.id).isEqualTo("gemini")
         assertThat(setting.displayName).isEqualTo("Google Gemini")
-        assertThat(setting.enabled).isTrue()
+        assertThat(setting.enabled).isFalse()
         assertThat(setting.modelId).isEqualTo("gemini-3.6-flash")
         assertThat(setting.baseUrl).contains("generativelanguage.googleapis.com")
     }
@@ -325,10 +325,10 @@ class ProviderSettingTest {
     }
 
     @Test
-    fun `all default providers are enabled by default`() {
-        // 預設供應商應全部啟用
+    fun `all default providers are disabled until configured`() {
+        // 未設定金鑰的預設供應商不應處於啟用狀態
         ProviderSetting.getDefaultProviders().forEach { provider ->
-            assertThat(provider.enabled).isTrue()
+            assertThat(provider.enabled).isFalse()
         }
     }
 

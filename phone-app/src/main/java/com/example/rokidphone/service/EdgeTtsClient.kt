@@ -1,6 +1,7 @@
 package com.example.rokidphone.service
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,6 +12,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Microsoft Edge TTS Client (phone-app copy).
@@ -40,13 +42,29 @@ class EdgeTtsClient(
 
         // Timeout duration
         private const val TIMEOUT_SECONDS = 30L
+
+        // Shared client: each OkHttpClient owns connection pool/dispatcher
+        // threads, so it must be reused instead of created per instance.
+        private val sharedHttpClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .build()
+        }
+
+        // SimpleDateFormat is not thread-safe; keep one instance per thread.
+        // The pattern claims GMT, so the time zone must be GMT explicitly.
+        private val timestampFormat = object : ThreadLocal<SimpleDateFormat>() {
+            override fun initialValue(): SimpleDateFormat =
+                SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss 'GMT'Z", Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("GMT")
+                }
+        }
     }
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .build()
+    private val httpClient: OkHttpClient
+        get() = sharedHttpClient
 
     /**
      * Synthesize speech.
@@ -65,12 +83,13 @@ class EdgeTtsClient(
         pitch: String = "+0Hz",
         volume: String = "+0%"
     ): Result<ByteArray> = withContext(ioDispatcher) {
+        val audioData = ByteArrayOutputStream()
+        val latch = CountDownLatch(1)
+        val errorRef = arrayOfNulls<Exception>(1)
+        val turnEndSeen = AtomicBoolean(false)
+        var webSocket: WebSocket? = null
         try {
             Log.d(TAG, "Starting speech synthesis: voice=$voice, text=${text.take(50)}...")
-
-            val audioData = ByteArrayOutputStream()
-            val latch = CountDownLatch(1)
-            val errorRef = arrayOfNulls<Exception>(1)
 
             val requestId = generateRequestId()
             val wsUrl = "$WSS_URL?TrustedClientToken=${getTrustedToken()}&ConnectionId=$requestId"
@@ -81,13 +100,13 @@ class EdgeTtsClient(
                 .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
                 .build()
 
-            val webSocket = httpClient.newWebSocket(
+            webSocket = httpClient.newWebSocket(
                 request,
-                createWebSocketListener(requestId, text, voice, rate, pitch, volume, audioData, latch, errorRef)
+                createWebSocketListener(requestId, text, voice, rate, pitch, volume, audioData, latch, errorRef, turnEndSeen)
             )
 
             if (!latch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                webSocket.cancel()
+                webSocket?.cancel()
                 return@withContext Result.failure(Exception("Speech synthesis timeout"))
             }
 
@@ -95,7 +114,9 @@ class EdgeTtsClient(
                 return@withContext Result.failure(it)
             }
 
-            val result = audioData.toByteArray()
+            // The OkHttp reader thread writes to audioData; synchronize so a
+            // racing write cannot corrupt the buffer while it is read here.
+            val result = synchronized(audioData) { audioData.toByteArray() }
             Log.d(TAG, "Speech synthesis complete, size: ${result.size} bytes")
 
             if (result.isEmpty()) {
@@ -103,9 +124,15 @@ class EdgeTtsClient(
             }
 
             Result.success(result)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Speech synthesis failed", e)
             Result.failure(e)
+        } finally {
+            // Ensure the connection is released on every exit path (timeout,
+            // error, cancellation) so sockets/reader threads cannot leak.
+            webSocket?.cancel()
         }
     }
 
@@ -119,7 +146,8 @@ class EdgeTtsClient(
         volume: String,
         audioData: ByteArrayOutputStream,
         latch: CountDownLatch,
-        errorRef: Array<Exception?>
+        errorRef: Array<Exception?>,
+        turnEndSeen: AtomicBoolean
     ): WebSocketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             Log.d(TAG, "WebSocket connection successful")
@@ -131,13 +159,20 @@ class EdgeTtsClient(
             val data = bytes.toByteArray()
             val headerEnd = findHeaderEnd(data)
             if (headerEnd > 0 && headerEnd < data.size) {
-                audioData.write(data, headerEnd, data.size - headerEnd)
+                // Written from the OkHttp reader thread; the coroutine thread
+                // reads the buffer under the same monitor.
+                synchronized(audioData) {
+                    audioData.write(data, headerEnd, data.size - headerEnd)
+                }
+            } else {
+                Log.w(TAG, "Discarding unparsable binary frame (${data.size} bytes)")
             }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (text.contains("Path:turn.end")) {
                 Log.d(TAG, "Received end signal")
+                turnEndSeen.set(true)
                 webSocket.close(1000, "Completed")
                 latch.countDown()
             }
@@ -151,7 +186,12 @@ class EdgeTtsClient(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             Log.d(TAG, "WebSocket closed: code=$code, reason=$reason")
-            if (latch.count > 0) latch.countDown()
+            if (!turnEndSeen.get()) {
+                // Server closed the socket before Path:turn.end: report the real
+                // cause instead of silently returning truncated/empty audio.
+                errorRef[0] = Exception("WebSocket closed before synthesis completed: code=$code, reason=$reason")
+            }
+            latch.countDown()
         }
     }
 
@@ -181,17 +221,14 @@ class EdgeTtsClient(
         volume: String
     ): String {
         val timestamp = getTimestamp()
-        val escapedText = text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
-            .replace("'", "&apos;")
+        val escapedText = escapeXml(text)
+        // Derive the synthesis locale from the voice name (e.g. ko-KR-SunHiNeural -> ko-KR)
+        val lang = voice.split('-').take(2).joinToString("-").ifBlank { "zh-CN" }
 
         val ssml = """
-            <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>
-                <voice name='$voice'>
-                    <prosody pitch='$pitch' rate='$rate' volume='$volume'>
+            <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$lang'>
+                <voice name='${escapeXml(voice)}'>
+                    <prosody pitch='${escapeXml(pitch)}' rate='${escapeXml(rate)}' volume='${escapeXml(volume)}'>
                         $escapedText
                     </prosody>
                 </voice>
@@ -209,17 +246,26 @@ class EdgeTtsClient(
     }
 
     private fun getTimestamp(): String {
-        val sdf = SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss 'GMT'Z", Locale.US)
-        return sdf.format(Date())
+        return timestampFormat.get().format(Date())
     }
+
+    /** Escape a value for safe interpolation into SSML text or attributes. */
+    private fun escapeXml(value: String): String = value
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
 
     private fun findHeaderEnd(data: ByteArray): Int {
         val pathAudio = "Path:audio".toByteArray()
 
-        for (i in 0 until data.size - pathAudio.size) {
+        // Inclusive upper bound: a match may end exactly at the end of the frame.
+        for (i in 0..data.size - pathAudio.size) {
             if (!matchesAt(data, i, pathAudio)) continue
-            val bodyStart = findBodyStart(data, i + pathAudio.size)
-            return bodyStart ?: (i + pathAudio.size + 2)
+            // Only trust the explicit 0x00 0x82 body delimiter; guessing an
+            // offset would corrupt the MP3 stream, so skip unparseable matches.
+            return findBodyStart(data, i + pathAudio.size) ?: continue
         }
         return -1
     }

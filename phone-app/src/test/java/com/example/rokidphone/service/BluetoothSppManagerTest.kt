@@ -237,8 +237,8 @@ class BluetoothSppManagerTest {
     }
 
     @Test
-    fun `disconnect skips when already disconnecting`() {
-        // 測試：已在斷線中時跳過
+    fun `disconnect still tears down when another disconnect is in progress`() {
+        // 測試：即使另一個斷線流程正在進行，disconnect 仍會執行清理（但不重複排程重啟）
         val isDisconnectingField = BluetoothSppManager::class.java.getDeclaredField("isDisconnecting")
         isDisconnectingField.isAccessible = true
         isDisconnectingField.setBoolean(manager, true)
@@ -246,8 +246,11 @@ class BluetoothSppManagerTest {
         setConnectionState(BluetoothConnectionState.CONNECTED)
         manager.disconnect(restartListening = false)
 
-        // State should NOT change
-        assertThat(manager.connectionState.value).isEqualTo(BluetoothConnectionState.CONNECTED)
+        // Teardown is idempotent and must not be dropped: state becomes DISCONNECTED
+        assertThat(manager.connectionState.value).isEqualTo(BluetoothConnectionState.DISCONNECTED)
+
+        // The in-flight operation still owns the flag
+        assertThat(isDisconnectingField.getBoolean(manager)).isTrue()
 
         // Cleanup
         isDisconnectingField.setBoolean(manager, false)

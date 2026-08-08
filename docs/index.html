@@ -8,6 +8,10 @@
       name="description"
       content="AI-powered voice and vision assistant for Rokid AR glasses. 13+ AI providers, 18+ STT engines, 13 languages."
     />
+    <!-- NOTE: Tailwind Play CDN is unversioned, has no SRI, and is not intended
+         for production. A compromised/updated CDN could inject script or break
+         styling. Ideally replace with a pre-built, versioned CSS file committed
+         to docs/ (pinned version + SRI is not available for the Play CDN JIT script). -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
@@ -146,6 +150,7 @@
           </div>
           <select
             id="lang-switcher"
+            aria-label="Select language"
             class="lang-select glass-card text-sm text-slate-300 rounded-lg px-3 py-1.5 border border-slate-600 focus:outline-none focus:border-blue-400 cursor-pointer"
           >
             <option value="en">🇺🇸 English</option>
@@ -193,6 +198,7 @@
           <a
             href="https://github.com/zero2005x/RokidAIAssistant"
             target="_blank"
+            rel="noopener noreferrer"
             class="inline-flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold transition shadow-lg shadow-blue-500/25"
           >
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -205,6 +211,7 @@
           <a
             href="https://github.com/zero2005x/RokidAIAssistant/releases"
             target="_blank"
+            rel="noopener noreferrer"
             class="inline-flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl border border-slate-600 hover:border-slate-400 text-slate-300 hover:text-white font-semibold transition"
           >
             📥 <span data-i18n="hero_download">Download APK</span>
@@ -675,6 +682,7 @@
           <a
             href="https://github.com/zero2005x/RokidAIAssistant"
             target="_blank"
+            rel="noopener noreferrer"
             class="inline-flex items-center gap-2 text-slate-400 hover:text-white transition text-sm"
           >
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -1607,8 +1615,10 @@
         const dict = translations[lang] || translations["en"];
         document.querySelectorAll("[data-i18n]").forEach((el) => {
           const key = el.getAttribute("data-i18n");
-          if (dict[key]) {
-            el.textContent = dict[key];
+          const value =
+            dict[key] !== undefined ? dict[key] : translations["en"][key];
+          if (value !== undefined) {
+            el.textContent = value;
           }
         });
         // RTL handling
@@ -1619,17 +1629,26 @@
         }
         document.documentElement.setAttribute("lang", lang);
         document.getElementById("lang-switcher").value = lang;
-        localStorage.setItem("rokid-lang", lang);
+        try {
+          localStorage.setItem("rokid-lang", lang);
+        } catch (e) {
+          /* storage unavailable (private mode / blocked) - ignore */
+        }
       }
 
       function detectLanguage() {
         // 1. Check localStorage
-        const saved = localStorage.getItem("rokid-lang");
+        let saved = null;
+        try {
+          saved = localStorage.getItem("rokid-lang");
+        } catch (e) {
+          saved = null;
+        }
         if (saved && translations[saved]) return saved;
         // 2. Check browser language
         const bl = navigator.language || navigator.userLanguage || "en";
         if (bl.startsWith("zh")) {
-          if (bl.includes("TW") || bl.includes("HK") || bl.includes("Hant"))
+          if (/(?:-|^)(TW|HK|MO)\b/i.test(bl) || /Hant/i.test(bl))
             return "zh-TW";
           return "zh-CN";
         }

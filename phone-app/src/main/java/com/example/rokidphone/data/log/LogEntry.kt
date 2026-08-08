@@ -3,6 +3,7 @@ package com.example.rokidphone.data.log
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Log level enumeration for filtering and display
@@ -16,17 +17,19 @@ enum class LogLevel(val priority: Int, val tag: String) {
     ASSERT(7, "A");
     
     companion object {
-        fun fromChar(char: Char): LogLevel {
-            return when (char) {
-                'V' -> VERBOSE
-                'D' -> DEBUG
-                'I' -> INFO
-                'W' -> WARN
-                'E' -> ERROR
-                'A' -> ASSERT
-                else -> DEBUG
-            }
+        /** Parse a logcat level character (case-insensitive); null when unrecognised. */
+        fun fromCharOrNull(char: Char): LogLevel? = when (char.uppercaseChar()) {
+            'V' -> VERBOSE
+            'D' -> DEBUG
+            'I' -> INFO
+            'W' -> WARN
+            'E' -> ERROR
+            'A' -> ASSERT
+            else -> null
         }
+
+        /** Parse a logcat level character, falling back to [DEBUG] for unrecognised input. */
+        fun fromChar(char: Char): LogLevel = fromCharOrNull(char) ?: DEBUG
     }
 }
 
@@ -34,7 +37,7 @@ enum class LogLevel(val priority: Int, val tag: String) {
  * Data class representing a single log entry
  */
 data class LogEntry(
-    val id: Long = System.nanoTime(),
+    val id: Long = nextId(),
     val timestamp: Long = System.currentTimeMillis(),
     val level: LogLevel,
     val tag: String,
@@ -42,11 +45,27 @@ data class LogEntry(
     val threadName: String = Thread.currentThread().name,
     val throwable: Throwable? = null
 ) {
+    companion object {
+        // Monotonic identity source (System.nanoTime() is a relative timer, not an id).
+        private val idCounter = AtomicLong()
+        private fun nextId(): Long = idCounter.incrementAndGet()
+
+        // SimpleDateFormat is not thread-safe; cache one instance per thread and pattern
+        // instead of allocating a new formatter for every log line rendered/exported.
+        private val formatters = object : ThreadLocal<MutableMap<String, SimpleDateFormat>>() {
+            override fun initialValue(): MutableMap<String, SimpleDateFormat> = mutableMapOf()
+        }
+
+        private const val MAX_DISPLAY_STACK_LINES = 10
+    }
+
     /**
      * Get formatted timestamp string
      */
     fun getFormattedTimestamp(pattern: String = "yyyy-MM-dd HH:mm:ss.SSS"): String {
-        val dateFormat = SimpleDateFormat(pattern, Locale.getDefault())
+        val dateFormat = formatters.get()!!.getOrPut(pattern) {
+            SimpleDateFormat(pattern, Locale.getDefault())
+        }
         return dateFormat.format(Date(timestamp))
     }
     
@@ -55,7 +74,16 @@ data class LogEntry(
      */
     fun toDisplayString(): String {
         val time = getFormattedTimestamp("HH:mm:ss.SSS")
-        val stackTrace = throwable?.let { "\n${it.stackTraceToString()}" } ?: ""
+        // Truncate stack traces for display to bound memory/rendering cost;
+        // toExportString() keeps the full trace.
+        val stackTrace = throwable?.let { t ->
+            val lines = t.stackTraceToString().lines()
+            val truncated = lines.take(MAX_DISPLAY_STACK_LINES).joinToString("\n")
+            val suffix = if (lines.size > MAX_DISPLAY_STACK_LINES) {
+                "\n… (${lines.size - MAX_DISPLAY_STACK_LINES} more lines)"
+            } else ""
+            "\n$truncated$suffix"
+        } ?: ""
         return "$time ${level.tag}/$tag: $message$stackTrace"
     }
     
@@ -86,11 +114,11 @@ data class LogFilter(
         // Check tag filter
         if (tags.isNotEmpty() && entry.tag !in tags) return false
         
-        // Check search query
+        // Check search query (locale-neutral, case-insensitive; avoids
+        // re-normalising the query for every entry)
         if (searchQuery.isNotBlank()) {
-            val query = searchQuery.lowercase()
-            val matchesMessage = entry.message.lowercase().contains(query)
-            val matchesTag = entry.tag.lowercase().contains(query)
+            val matchesMessage = entry.message.contains(searchQuery, ignoreCase = true)
+            val matchesTag = entry.tag.contains(searchQuery, ignoreCase = true)
             if (!matchesMessage && !matchesTag) return false
         }
         

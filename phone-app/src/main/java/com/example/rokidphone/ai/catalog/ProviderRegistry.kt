@@ -163,10 +163,13 @@ object ProviderRegistry {
         ProviderDescriptor(
             id = AiProvider.GEMINI_LIVE,
             displayName = "Gemini Live",
+            // WebSocket endpoint: there is no usable HTTP models list for the
+            // Live API here, so this provider has no remote catalog and uses
+            // the verified fallback list (its models ship on v1beta only).
             defaultBaseUrl = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
             protocol = ApiProtocol.GEMINI_LIVE,
-            catalogFormat = CatalogFormat.GEMINI,
-            modelsEndpointPath = "models",
+            catalogFormat = CatalogFormat.NONE,
+            modelsEndpointPath = null,
             requiresApiKey = true,
             allowsCustomBaseUrl = false,
             fallbackDocSource = DOC_GEMINI
@@ -174,6 +177,9 @@ object ProviderRegistry {
         ProviderDescriptor(
             id = AiProvider.ANYTHINGLLM,
             displayName = "AnythingLLM",
+            // Cleartext http:// is intentional here: the default targets a
+            // loopback self-hosted server; users exposing a remote instance
+            // should supply an https:// URL via the custom base URL setting.
             defaultBaseUrl = "http://localhost:3001",
             protocol = ApiProtocol.ANYTHING_LLM,
             catalogFormat = CatalogFormat.NONE,
@@ -207,12 +213,26 @@ object ProviderRegistry {
             allowsCustomBaseUrl = true,
             fallbackDocSource = "OpenAI-compatible server docs"
         )
-    ).associateBy { it.id }
+    ).also { list ->
+        require(list.distinctBy { it.id }.size == list.size) {
+            "Duplicate ProviderDescriptor ids: " +
+                list.groupBy { it.id }.filterValues { it.size > 1 }.keys
+        }
+    }.associateBy { it.id }
+
+    init {
+        require(isComplete()) {
+            "Missing ProviderDescriptor for: " + (AiProvider.entries.toSet() - descriptors.keys)
+        }
+    }
+
+    /** Cached ordered list so [all] does not rebuild it on every call. */
+    private val ordered: List<ProviderDescriptor> = AiProvider.entries.map { descriptorFor(it) }
 
     fun descriptorFor(provider: AiProvider): ProviderDescriptor =
         requireNotNull(descriptors[provider]) { "No ProviderDescriptor registered for $provider" }
 
-    fun all(): List<ProviderDescriptor> = AiProvider.entries.map { descriptorFor(it) }
+    fun all(): List<ProviderDescriptor> = ordered
 
     /** Every provider must be registered; exposed for factory coverage tests. */
     fun isComplete(): Boolean = descriptors.keys.containsAll(AiProvider.entries.toSet())

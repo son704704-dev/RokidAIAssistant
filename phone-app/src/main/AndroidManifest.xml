@@ -15,6 +15,9 @@
     <!-- 麥克風權限 (語音輸入備用) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     
+    <!-- 通知權限 (API 33+ 前景服務通知需要) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
     <!-- 前景服務權限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

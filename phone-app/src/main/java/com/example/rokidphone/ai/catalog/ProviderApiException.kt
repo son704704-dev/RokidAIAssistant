@@ -40,11 +40,26 @@ class ProviderApiException(
         }
 
     companion object {
+        private const val MAX_MESSAGE_LENGTH = 500
+
+        /** Upper clamp for Retry-After so absurd/overflowing values cannot stall retries. */
+        private const val MAX_RETRY_AFTER_SECONDS = 3600L
+
         private val secretPatterns = listOf(
             Regex("Bearer\\s+[A-Za-z0-9._\\-]+"),
+            Regex("Basic\\s+[A-Za-z0-9+/=]+"),
             Regex("sk-[A-Za-z0-9._\\-]+"),
+            // Google API keys
+            Regex("AIza[0-9A-Za-z_\\-]+"),
+            // JWTs (header.payload.signature)
+            Regex("eyJ[A-Za-z0-9_\\-]+\\.[A-Za-z0-9_\\-]+\\.[A-Za-z0-9_\\-]*"),
             Regex("key=[A-Za-z0-9._\\-]+"),
-            Regex("access_token=[A-Za-z0-9._\\-]+")
+            Regex("access_token=[A-Za-z0-9._\\-]+"),
+            // Generic JSON credential fields: "api_key"/"secret"/"password"/...: "..."
+            Regex(
+                "\\\"(?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|password)\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"",
+                RegexOption.IGNORE_CASE
+            )
         )
 
         /** Remove anything that looks like a credential from an arbitrary message. */
@@ -54,10 +69,16 @@ class ProviderApiException(
             var out: String = nonNull
             for (pattern in secretPatterns) {
                 out = pattern.replace(out) { m ->
-                    if (m.value.contains('=')) m.value.substringBefore('=') + "=***" else "***"
+                    when {
+                        // JSON field rule: keep the field name, mask the value.
+                        m.groupValues.size > 1 && m.value.startsWith("\"") ->
+                            m.value.substringBeforeLast(m.groupValues[1]) + "***\""
+                        m.value.contains('=') -> m.value.substringBefore('=') + "=***"
+                        else -> "***"
+                    }
                 }
             }
-            return out.take(500)
+            return out.take(MAX_MESSAGE_LENGTH)
         }
 
         fun fromHttpStatus(
@@ -65,8 +86,10 @@ class ProviderApiException(
             responseBody: String?,
             retryAfterHeader: String? = null
         ): ProviderApiException {
-            val providerCode = extractProviderCode(responseBody)
-            val rawMessage = extractProviderMessage(responseBody)
+            // Parse the body once and share it between code/message extraction.
+            val parsedBody = parseJsonObject(responseBody)
+            val providerCode = extractProviderCode(parsedBody)
+            val rawMessage = extractProviderMessage(parsedBody)
             val kind = when (status) {
                 401 -> ProviderErrorKind.INVALID_API_KEY
                 403 -> when {
@@ -91,10 +114,13 @@ class ProviderApiException(
                     rawMessage?.contains("quota", ignoreCase = true) == true -> ProviderErrorKind.QUOTA_EXCEEDED
                     else -> ProviderErrorKind.RATE_LIMIT
                 }
+                408 -> ProviderErrorKind.TIMEOUT
                 in 500..599 -> ProviderErrorKind.SERVICE_UNAVAILABLE
                 else -> ProviderErrorKind.UNKNOWN
             }
-            val retryAfterMs = retryAfterHeader?.toLongOrNull()?.times(1000)
+            val retryAfterMs = retryAfterHeader?.trim()?.toLongOrNull()
+                ?.coerceIn(0L, MAX_RETRY_AFTER_SECONDS)
+                ?.times(1000L)
             return ProviderApiException(
                 kind = kind,
                 httpStatus = status,
@@ -132,27 +158,46 @@ class ProviderApiException(
             return "$base (HTTP $status$codePart): $detail"
         }
 
-        private fun extractProviderMessage(body: String?): String? {
+        private fun parseJsonObject(body: String?): org.json.JSONObject? {
             if (body.isNullOrBlank()) return null
             return try {
-                val json = org.json.JSONObject(body)
-                json.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
-                    ?: json.optString("message").takeIf { it.isNotBlank() }
-                    ?: json.optString("error_msg").takeIf { it.isNotBlank() }
-                    ?: json.optString("error").takeIf { it.isNotBlank() }
-            } catch (e: Exception) {
+                org.json.JSONObject(body)
+            } catch (_: Exception) {
                 null
             }
         }
 
-        private fun extractProviderCode(body: String?): String? {
-            if (body.isNullOrBlank()) return null
+        private fun extractProviderMessage(json: org.json.JSONObject?): String? {
+            if (json == null) return null
             return try {
-                val json = org.json.JSONObject(body)
-                json.optJSONObject("error")?.optString("code")?.takeIf { it.isNotBlank() && it != "null" }
-                    ?: json.optString("code").takeIf { it.isNotBlank() && it != "null" }
-                    ?: json.optString("error_code").takeIf { it.isNotBlank() && it != "0" && it != "null" }
-            } catch (e: Exception) {
+                json.optJSONObject("error")?.optString("message")?.takeIf { it.isNotBlank() }
+                    ?: json.optString("message").takeIf { it.isNotBlank() }
+                    ?: json.optString("error_msg").takeIf { it.isNotBlank() }
+                    // Restrict to actual string values: optString("error") would
+                    // splice the whole error object into the message via toString().
+                    ?: (json.opt("error") as? String)?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        /** String/numeric scalar field or null for absent/null/object values. */
+        private fun scalarField(json: org.json.JSONObject, key: String): String? {
+            if (json.isNull(key)) return null
+            return when (val value = json.opt(key)) {
+                is String -> value.takeIf { it.isNotBlank() }
+                is Number -> value.toString()
+                else -> null
+            }
+        }
+
+        private fun extractProviderCode(json: org.json.JSONObject?): String? {
+            if (json == null) return null
+            return try {
+                json.optJSONObject("error")?.let { scalarField(it, "code") }
+                    ?: scalarField(json, "code")
+                    ?: scalarField(json, "error_code")?.takeIf { it != "0" }
+            } catch (_: Exception) {
                 null
             }
         }

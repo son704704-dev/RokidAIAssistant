@@ -7,6 +7,7 @@ import com.example.rokidphone.data.AiProvider
  *
  * @param id exact model ID sent to the API
  * @param displayName human readable name
+ * @param provider owning provider; must match the catalog this entry came from
  * @param capabilities model-level capability flags (never name-inferred)
  * @param status stable / preview / deprecated / legacy
  * @param source where this entry came from (live API, cache, fallback, manual)
@@ -21,6 +22,21 @@ data class ModelInfo(
     val source: CatalogSource = CatalogSource.FALLBACK,
     val description: String = ""
 ) {
+    init {
+        // A blank id would silently propagate into request bodies and only
+        // fail at the network layer; fail fast at construction instead.
+        require(id.isNotBlank()) { "ModelInfo id must not be blank" }
+    }
+
+    /** Stable identity of a model, independent of status/source/description. */
+    val identityKey: Pair<AiProvider, String>
+        get() = provider to id
+
+    /**
+     * True when this entry may be auto-selected as the provider default.
+     * This is about *auto-selection* only — it must not be used to drop a
+     * user's previously chosen preview/legacy model.
+     */
     val isSelectableDefault: Boolean
         get() = status == ModelStatus.STABLE
 

@@ -12,11 +12,9 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -46,6 +44,8 @@ import com.example.rokidphone.ui.home.HomeScreen
 import com.example.rokidphone.ui.logs.LogViewerScreen
 import com.example.rokidphone.ui.navigation.BottomNavDestination
 import com.example.rokidphone.ui.navigation.NavRoutes
+import com.example.rokidphone.ui.recording.RecordingDetailScreen
+import com.example.rokidphone.ui.recording.RecordingsScreen
 import com.example.rokidphone.ui.theme.RokidPhoneTheme
 import com.example.rokidphone.viewmodel.ConversationViewModel
 import com.example.rokidphone.viewmodel.PhotoGalleryViewModel
@@ -59,6 +59,11 @@ class MainActivity : AppCompatActivity() {
         val allGranted = permissions.values.all { it }
         if (allGranted) {
             startAIService()
+        } else {
+            val denied = permissions.filterValues { !it }.keys
+            android.util.Log.w("MainActivity", "Permissions denied: $denied - AI service not started")
+            // TODO: show a rationale/snackbar and direct the user to app settings;
+            // distinguish permanently-denied via shouldShowRequestPermissionRationale()
         }
     }
     
@@ -96,6 +101,11 @@ class MainActivity : AppCompatActivity() {
         
         requiredPermissions.add(Manifest.permission.RECORD_AUDIO)
         
+        // API 33+: foreground service notification requires this runtime permission
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requiredPermissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        
         val notGranted = requiredPermissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
@@ -109,10 +119,17 @@ class MainActivity : AppCompatActivity() {
     
     private fun startAIService() {
         val intent = Intent(this, PhoneAIService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            // ForegroundServiceStartNotAllowedException (API 31+), SecurityException /
+            // IllegalStateException for missing FGS-type permissions (API 34+)
+            android.util.Log.e("MainActivity", "Failed to start AI service", e)
+            // TODO: surface the failure to the user
         }
     }
     
@@ -141,9 +158,12 @@ fun PhoneMainScreen(
     
     val uiState by viewModel.uiState.collectAsState()
     
-    // Check if initial setup is needed when settings are loaded
-    LaunchedEffect(settings) {
-        viewModel.checkInitialSetup(settings.hasAnyApiKeyConfigured())
+    // Check if initial setup is needed when settings are loaded.
+    // Key on the derived boolean so unrelated settings changes (TTS rate,
+    // model id, ...) don't re-trigger the check and re-show dismissed dialogs.
+    val hasApiKey = settings.hasAnyApiKeyConfigured()
+    LaunchedEffect(hasApiKey) {
+        viewModel.checkInitialSetup(hasApiKey)
     }
     
     // Show initial setup dialog when no API key is configured
@@ -205,23 +225,26 @@ fun PhoneMainScreen(
                             // Navigate to the selected destination
                             if (currentDestination?.route != destination.route) {
                                 if (destination.route == NavRoutes.HOME) {
-                                    // For HOME: clear entire back stack and go to HOME
+                                    // For HOME: keep the start destination at the
+                                    // bottom of the stack and restore its state
                                     navController.navigate(destination.route) {
                                         popUpTo(navController.graph.startDestinationId) {
-                                            inclusive = true
+                                            inclusive = false
+                                            saveState = true
                                         }
                                         launchSingleTop = true
+                                        restoreState = true
                                     }
                                 } else {
                                     // For other bottom nav items: navigate normally
                                     navController.navigate(destination.route) {
                                         // Pop back to HOME but keep HOME in stack
                                         popUpTo(NavRoutes.HOME) {
-                                            saveState = false
+                                            saveState = true
                                             inclusive = false
                                         }
                                         launchSingleTop = true
-                                        restoreState = false
+                                        restoreState = true
                                     }
                                 }
                             }
@@ -264,7 +287,7 @@ fun PhoneMainScreen(
             }
             
             composable(NavRoutes.RECORDINGS) {
-                com.example.rokidphone.ui.recording.RecordingsScreen(
+                RecordingsScreen(
                     onBack = { navController.popBackStack() },
                     onRecordingDetail = { recordingId ->
                         navController.navigate(NavRoutes.recordingDetail(recordingId))
@@ -275,13 +298,13 @@ fun PhoneMainScreen(
             composable(
                 route = NavRoutes.RECORDING_DETAIL,
                 arguments = listOf(
-                    androidx.navigation.navArgument("recordingId") { 
-                        type = androidx.navigation.NavType.StringType 
+                    navArgument("recordingId") {
+                        type = NavType.StringType
                     }
                 )
             ) { backStackEntry ->
                 val recordingId = backStackEntry.arguments?.getString("recordingId") ?: ""
-                com.example.rokidphone.ui.recording.RecordingDetailScreen(
+                RecordingDetailScreen(
                     recordingId = recordingId,
                     onBack = { navController.popBackStack() }
                 )
@@ -418,7 +441,12 @@ fun PhoneMainScreen(
                 route = NavRoutes.CONVERSATION_DETAIL,
                 arguments = listOf(navArgument("conversationId") { type = NavType.StringType })
             ) { backStackEntry ->
-                val conversationId = backStackEntry.arguments?.getString("conversationId") ?: return@composable
+                val conversationId = backStackEntry.arguments?.getString("conversationId")
+                if (conversationId == null) {
+                    // Missing argument: pop back instead of rendering a blank screen
+                    LaunchedEffect(Unit) { navController.popBackStack() }
+                    return@composable
+                }
                 val conversationViewModel: ConversationViewModel = viewModel()
                 val context = LocalContext.current
                 
@@ -545,6 +573,12 @@ fun ApiKeyMissingDialog(
                 else -> {}
             }
         }
+    }
+    
+    if (message.isBlank()) {
+        // Both validations passed or produced no detail: nothing actionable to
+        // show, so skip the dialog instead of rendering a misleading empty body.
+        return
     }
     
     AlertDialog(

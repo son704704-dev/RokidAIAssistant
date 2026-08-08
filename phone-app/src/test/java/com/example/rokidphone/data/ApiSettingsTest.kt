@@ -77,7 +77,11 @@ class ApiSettingsTest {
         )
 
         assertThat(settings.getCurrentBaseUrl()).isEqualTo(AiProvider.CUSTOM.defaultBaseUrl)
-        assertThat(settings.getCurrentModelId()).isEqualTo("fallback-model")
+        // Blank custom model falls back to the catalog default, never to another
+        // provider's aiModelId (which would leak e.g. a Gemini id to the endpoint)
+        assertThat(settings.getCurrentModelId()).isEqualTo(
+            com.example.rokidphone.ai.catalog.FallbackModelCatalog.defaultModelFor(AiProvider.CUSTOM)
+        )
     }
 
     @Test

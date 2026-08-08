@@ -2,13 +2,10 @@ package com.example.rokidphone.data.log
 
 import android.content.Context
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
@@ -18,6 +15,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Centralized log manager for the application
@@ -37,7 +35,23 @@ class LogManager private constructor(private val context: Context) {
         private const val DEFAULT_MAX_ENTRIES = 5000
         private const val LOG_FILE_PREFIX = "rokid_logs_"
         private const val LOG_DIR_NAME = "logs"
-        
+
+        // Clock-skew tolerance for logcat timestamps, which carry no year
+        private const val FUTURE_LOG_TOLERANCE_MS = 60_000L
+
+        // Hoisted out of the per-line parse loop (Regex compilation is expensive)
+        private val LOGCAT_LINE_REGEX =
+            Regex("""(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+([VDIWEA])/([^(:\s]+)\s*(?:\(\s*\d+\))?\s*:\s*(.*)""")
+
+        // SimpleDateFormat is not thread-safe; keep one instance per thread
+        private val YEAR_FORMAT = object : ThreadLocal<SimpleDateFormat>() {
+            override fun initialValue(): SimpleDateFormat = SimpleDateFormat("yyyy", Locale.getDefault())
+        }
+        private val LOG_TIMESTAMP_FORMAT = object : ThreadLocal<SimpleDateFormat>() {
+            override fun initialValue(): SimpleDateFormat =
+                SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
+        }
+
         @Volatile
         private var instance: LogManager? = null
         
@@ -50,6 +64,9 @@ class LogManager private constructor(private val context: Context) {
     
     // In-memory log storage using thread-safe deque
     private val logBuffer = ConcurrentLinkedDeque<LogEntry>()
+
+    // Read/written from arbitrary threads (log() vs setMaxEntries())
+    @Volatile
     private var maxEntries = DEFAULT_MAX_ENTRIES
     
     // Observable log state
@@ -63,19 +80,24 @@ class LogManager private constructor(private val context: Context) {
     // Loading state
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
-    
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    
-    // Log directory
-    private val logDir: File
-        get() = File(context.filesDir, LOG_DIR_NAME).also { 
-            if (!it.exists()) it.mkdirs() 
+
+    // In-flight read counter so overlapping reads don't reset the loading state early
+    private val loadingCounter = AtomicInteger()
+
+    // Log directory (created once; mkdirs failure is logged instead of ignored)
+    private val logDir: File by lazy {
+        File(context.filesDir, LOG_DIR_NAME).also {
+            if (!it.exists() && !it.mkdirs()) {
+                Log.w(TAG, "Failed to create log dir: ${it.absolutePath}")
+            }
         }
-    
+    }
+
     /**
      * Configure maximum number of log entries to keep in memory
      */
     fun setMaxEntries(max: Int) {
+        require(max > 0) { "maxEntries must be positive, was $max" }
         maxEntries = max
         trimBuffer()
     }
@@ -124,6 +146,9 @@ class LogManager private constructor(private val context: Context) {
         }
     }
     
+    // NOTE: O(n) per call (full buffer copy + tag-set rebuild) and invoked on every
+    // log() call. Accepted for now given the bounded buffer; if log bursts become a
+    // problem, throttle StateFlow updates or maintain the tag set incrementally.
     private fun updateState() {
         _logs.value = logBuffer.toList()
         _availableTags.value = logBuffer.map { it.tag }.toSet()
@@ -140,38 +165,37 @@ class LogManager private constructor(private val context: Context) {
         lineCount: Int = 1000,
         filter: LogFilter = LogFilter()
     ): List<LogEntry> = withContext(Dispatchers.IO) {
-        _isLoading.value = true
+        _isLoading.value = loadingCounter.incrementAndGet() > 0
         try {
             val entries = mutableListOf<LogEntry>()
-            val packageName = context.packageName
-            
+
             // Use logcat command to read logs
             val process = Runtime.getRuntime().exec(arrayOf(
                 "logcat", "-d", "-v", "time", "-t", lineCount.toString()
             ))
-            
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            var line: String?
-            
-            while (reader.readLine().also { line = it } != null) {
-                line?.let { logLine ->
-                    parseLogLine(logLine)?.let { entry ->
-                        if (filter.matches(entry)) {
-                            entries.add(entry)
+
+            try {
+                BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
+                    reader.forEachLine { logLine ->
+                        parseLogLine(logLine)?.let { entry ->
+                            if (filter.matches(entry)) {
+                                entries.add(entry)
+                            }
                         }
                     }
                 }
+                process.waitFor()
+            } finally {
+                // Always reap the child process, even on parse/IO failure
+                process.destroy()
             }
-            
-            reader.close()
-            process.waitFor()
-            
+
             entries
         } catch (e: Exception) {
             Log.e(TAG, "Error reading system logs", e)
             emptyList()
         } finally {
-            _isLoading.value = false
+            _isLoading.value = loadingCounter.decrementAndGet() > 0
         }
     }
     
@@ -180,8 +204,11 @@ class LogManager private constructor(private val context: Context) {
      */
     suspend fun loadSystemLogsToBuffer(lineCount: Int = 500) {
         val systemLogs = readSystemLogs(lineCount)
+        // Dedup on a stable key: freshly parsed entries always get new ids, so an
+        // id comparison never matches and repeated loads duplicated every entry.
+        val existingKeys = logBuffer.mapTo(HashSet()) { Triple(it.timestamp, it.tag, it.message) }
         systemLogs.forEach { entry ->
-            if (!logBuffer.any { it.id == entry.id }) {
+            if (existingKeys.add(Triple(entry.timestamp, entry.tag, entry.message))) {
                 logBuffer.addLast(entry)
             }
         }
@@ -196,20 +223,29 @@ class LogManager private constructor(private val context: Context) {
     private fun parseLogLine(line: String): LogEntry? {
         return try {
             // Basic logcat format: "01-26 10:30:45.123 D/MyTag  ( 1234): message"
-            val regex = Regex("""(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+([VDIWEA])/([^(:\s]+)\s*(?:\(\s*\d+\))?\s*:\s*(.*)""")
-            val match = regex.find(line) ?: return null
-            
+            val match = LOGCAT_LINE_REGEX.find(line) ?: return null
+
             val (timeStr, levelChar, tag, message) = match.destructured
-            
-            // Parse timestamp (use current year)
-            val year = SimpleDateFormat("yyyy", Locale.getDefault()).format(Date())
-            val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
+
+            // Logcat timestamps carry no year; assume the current year, but if that
+            // lands in the future (e.g. a Dec-31 log read on Jan-1) use last year.
+            val now = System.currentTimeMillis()
             val timestamp = try {
-                dateFormat.parse("$year-$timeStr")?.time ?: System.currentTimeMillis()
+                val year = YEAR_FORMAT.get()!!.format(Date(now))
+                val parsed = LOG_TIMESTAMP_FORMAT.get()!!.parse("$year-$timeStr")?.time
+                when {
+                    parsed == null -> now
+                    parsed - now > FUTURE_LOG_TOLERANCE_MS ->
+                        java.util.Calendar.getInstance().apply {
+                            timeInMillis = parsed
+                            add(java.util.Calendar.YEAR, -1)
+                        }.timeInMillis
+                    else -> parsed
+                }
             } catch (e: Exception) {
-                System.currentTimeMillis()
+                now
             }
-            
+
             LogEntry(
                 timestamp = timestamp,
                 level = LogLevel.fromChar(levelChar.first()),
@@ -242,7 +278,8 @@ class LogManager private constructor(private val context: Context) {
     ): File? = withContext(Dispatchers.IO) {
         try {
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val name = fileName ?: "${LOG_FILE_PREFIX}$timestamp"
+            // Sanitize caller-supplied names to prevent path traversal outside logDir
+            val name = (fileName ?: "${LOG_FILE_PREFIX}$timestamp").replace(Regex("[^A-Za-z0-9_.-]"), "_")
             val file = File(logDir, "$name.txt")
             
             val logsToExport = getFilteredLogs(filter)
@@ -324,11 +361,14 @@ class LogManager private constructor(private val context: Context) {
      * @return Number of deleted entries
      */
     fun deleteLogs(filter: LogFilter): Int {
-        val toRemove = logBuffer.filter { filter.matches(it) }
-        toRemove.forEach { logBuffer.remove(it) }
+        // Single-pass removal; remove-by-equals could delete an equal duplicate
+        // and the count no longer depends on a non-atomic filter-then-remove
+        val before = logBuffer.size
+        logBuffer.removeAll { filter.matches(it) }
+        val removed = before - logBuffer.size
         updateState()
-        Log.i(TAG, "Deleted ${toRemove.size} log entries")
-        return toRemove.size
+        Log.i(TAG, "Deleted $removed log entries")
+        return removed
     }
     
     /**
@@ -369,11 +409,12 @@ class LogManager private constructor(private val context: Context) {
      * @return Number of deleted entries
      */
     fun deleteLogsBelowLevel(belowLevel: LogLevel): Int {
-        val toRemove = logBuffer.filter { it.level.priority < belowLevel.priority }
-        toRemove.forEach { logBuffer.remove(it) }
+        val before = logBuffer.size
+        logBuffer.removeAll { it.level.priority < belowLevel.priority }
+        val removed = before - logBuffer.size
         updateState()
-        Log.i(TAG, "Deleted ${toRemove.size} log entries below level ${belowLevel.tag}")
-        return toRemove.size
+        Log.i(TAG, "Deleted $removed log entries below level ${belowLevel.tag}")
+        return removed
     }
     
     /**
@@ -410,8 +451,12 @@ class LogManager private constructor(private val context: Context) {
      */
     suspend fun clearSystemLogcat(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val process = Runtime.getRuntime().exec("logcat -c")
-            val exitCode = process.waitFor()
+            val process = Runtime.getRuntime().exec(arrayOf("logcat", "-c"))
+            val exitCode = try {
+                process.waitFor()
+            } finally {
+                process.destroy()
+            }
             exitCode == 0
         } catch (e: Exception) {
             Log.e(TAG, "Error clearing system logcat", e)

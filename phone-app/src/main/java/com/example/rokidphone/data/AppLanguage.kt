@@ -33,7 +33,7 @@ enum class AppLanguage(
         code = "es",
         displayName = "Spanish",
         nativeName = "Español",
-        locale = Locale("es")
+        locale = Locale.forLanguageTag("es")
     ),
     FRENCH(
         code = "fr",
@@ -51,7 +51,7 @@ enum class AppLanguage(
         code = "ru",
         displayName = "Russian",
         nativeName = "Русский",
-        locale = Locale("ru")
+        locale = Locale.forLanguageTag("ru")
     ),
     KOREAN(
         code = "ko",
@@ -63,13 +63,13 @@ enum class AppLanguage(
         code = "uk",
         displayName = "Ukrainian",
         nativeName = "Українська",
-        locale = Locale("uk")
+        locale = Locale.forLanguageTag("uk")
     ),
     ARABIC(
         code = "ar",
         displayName = "Arabic",
         nativeName = "العربية",
-        locale = Locale("ar")
+        locale = Locale.forLanguageTag("ar")
     ),
     ITALIAN(
         code = "it",
@@ -81,28 +81,39 @@ enum class AppLanguage(
         code = "vi",
         displayName = "Vietnamese",
         nativeName = "Tiếng Việt",
-        locale = Locale("vi")
+        locale = Locale.forLanguageTag("vi")
     ),
     THAI(
         code = "th",
         displayName = "Thai",
         nativeName = "ไทย",
-        locale = Locale("th")
+        locale = Locale.forLanguageTag("th")
     );
     
     companion object {
         fun fromCode(code: String): AppLanguage {
-            return entries.find { it.code == code } ?: ENGLISH
+            // Normalise separators/casing so realistic inputs ("zh_CN", "ZH-CN",
+            // "zh-Hans-CN", "en-US") still resolve instead of silently resetting
+            // the persisted preference; fall back to locale-based resolution.
+            val normalized = code.trim().replace('_', '-')
+            return entries.find { it.code.equals(normalized, ignoreCase = true) }
+                ?: fromLocale(Locale.forLanguageTag(normalized))
         }
-        
+
         fun fromLocale(locale: Locale): AppLanguage {
-            // Try exact match first
-            val exactMatch = entries.find { 
-                it.locale.language == locale.language && 
-                (it.locale.country.isEmpty() || it.locale.country == locale.country)
+            // Chinese must be disambiguated by script/region, not declaration order
+            if (locale.language == "zh") {
+                val isTraditional = locale.script == "Hant" ||
+                    locale.country in setOf("TW", "HK", "MO")
+                return if (isTraditional) TRADITIONAL_CHINESE else SIMPLIFIED_CHINESE
+            }
+
+            // Try exact match first (strict country comparison)
+            val exactMatch = entries.find {
+                it.locale.language == locale.language && it.locale.country == locale.country
             }
             if (exactMatch != null) return exactMatch
-            
+
             // Then try language-only match
             return entries.find { it.locale.language == locale.language } ?: ENGLISH
         }

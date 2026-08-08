@@ -1,5 +1,6 @@
 package com.example.rokidphone.data
 
+import androidx.annotation.StringRes
 import com.example.rokidphone.R
 
 /**
@@ -10,8 +11,8 @@ import com.example.rokidphone.R
  * GOOGLE_TRANSLATE_TTS uses Google Translate's TTS endpoint (free, average quality).
  */
 enum class TtsProvider(
-    val displayNameResId: Int,
-    val descriptionResId: Int
+    @StringRes val displayNameResId: Int,
+    @StringRes val descriptionResId: Int
 ) {
     EDGE_TTS(
         displayNameResId = R.string.tts_provider_edge,
@@ -29,11 +30,20 @@ enum class TtsProvider(
     companion object {
         /**
          * Parse a [TtsProvider] from its [name] string.
+         * Returns null when [name] is null, blank, or unrecognised, so callers
+         * can distinguish "absent" from "invalid" and react/log themselves.
+         */
+        @JvmStatic
+        fun fromNameOrNull(name: String?): TtsProvider? {
+            if (name.isNullOrBlank()) return null
+            return entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
+        }
+
+        /**
+         * Parse a [TtsProvider] from its [name] string.
          * Returns [EDGE_TTS] when [name] is null, blank, or unrecognised.
          */
-        fun fromName(name: String?): TtsProvider {
-            if (name.isNullOrBlank()) return EDGE_TTS
-            return entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: EDGE_TTS
-        }
+        @JvmStatic
+        fun fromName(name: String?): TtsProvider = fromNameOrNull(name) ?: EDGE_TTS
     }
 }

@@ -2,20 +2,24 @@ package com.example.rokidphone.service.ai
 
 import android.util.Base64
 import android.util.Log
+import com.example.rokidphone.BuildConfig
 import com.example.rokidphone.ai.catalog.ProviderApiException
 import com.example.rokidphone.ai.catalog.ProviderErrorKind
 import com.example.rokidphone.data.AiProvider
 import com.example.rokidphone.service.SpeechResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 
 /**
@@ -51,6 +55,10 @@ class AnthropicService(
         internal const val DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
         internal const val API_VERSION = "2023-06-01"
         internal const val BETA_CONTEXT_1M = "context-1m-2025-08-07"
+        /** Number of recent history entries (user+assistant pairs) resent per request. */
+        private const val HISTORY_TURNS = 6
+        /** Cap on max_tokens for vision requests. */
+        private const val MAX_VISION_TOKENS = 4096
     }
     
     /**
@@ -75,7 +83,7 @@ class AnthropicService(
      */
     override suspend fun chat(userMessage: String): String {
         return withContext(Dispatchers.IO) {
-            Log.d(TAG, "Chat request: $userMessage")
+            if (BuildConfig.DEBUG) Log.d(TAG, "Chat request: $userMessage")
 
             val messages = buildChatMessages(userMessage)
             val requestJson = buildChatRequest(messages)
@@ -96,7 +104,7 @@ class AnthropicService(
     private fun buildChatMessages(userMessage: String): JSONArray {
         return JSONArray().apply {
             // Conversation history
-            for ((role, content) in conversationHistory.takeLast(6)) {
+            for ((role, content) in conversationHistory.takeLast(HISTORY_TURNS)) {
                 put(JSONObject().apply {
                     put("role", role)
                     put("content", content)
@@ -157,6 +165,19 @@ class AnthropicService(
         var outputTokens: Long? = null
         var failed = false
 
+        // Register cancellation BEFORE the blocking execute()/read loop so a
+        // cancelled collector aborts the in-flight HTTP request immediately.
+        currentCoroutineContext().job.invokeOnCompletion { call.cancel() }
+
+        // trySend drops events when the channel is full or closed; never discard
+        // the result silently or the UI transcript diverges from persisted history.
+        fun emitEvent(event: AiStreamEvent) {
+            if (trySend(event).isFailure) {
+                Log.w(TAG, "Stream event dropped (channel closed or buffer full): ${event::class.simpleName}")
+                failed = true
+            }
+        }
+
         try {
             call.execute().use { response ->
                 if (!response.isSuccessful) {
@@ -164,10 +185,19 @@ class AnthropicService(
                     val error = ProviderApiException.fromHttpStatus(
                         response.code, response.body?.string(), response.header("Retry-After")
                     )
-                    trySend(AiStreamEvent.Error(error.kind, error.message ?: "Provider error", error.httpStatus))
+                    emitEvent(AiStreamEvent.Error(error.kind, error.message ?: "Provider error", error.httpStatus))
                     return@use
                 }
-                val source = response.body?.source() ?: return@use
+                val source = response.body?.source() ?: run {
+                    failed = true
+                    emitEvent(
+                        AiStreamEvent.Error(
+                            ProviderErrorKind.UNKNOWN,
+                            "Empty response body (HTTP ${response.code})"
+                        )
+                    )
+                    return@use
+                }
                 SseParser.readEvents(source) { event ->
                     if (event is SseParser.SseEvent.Data) {
                         try {
@@ -180,12 +210,12 @@ class AnthropicService(
                                             val text = delta.optString("text", "")
                                             if (text.isNotEmpty()) {
                                                 fullText.append(text)
-                                                trySend(AiStreamEvent.TextDelta(text))
+                                                emitEvent(AiStreamEvent.TextDelta(text))
                                             }
                                         }
                                         "thinking_delta", "signature_delta" -> {
                                             // Reasoning content is never shown to the user.
-                                            trySend(AiStreamEvent.Thinking)
+                                            emitEvent(AiStreamEvent.Thinking)
                                         }
                                     }
                                 }
@@ -201,8 +231,9 @@ class AnthropicService(
                                         ?.takeIf { it > 0 }
                                 }
                                 "error" -> {
+                                    failed = true
                                     val msg = json.optJSONObject("error")?.optString("message")
-                                    trySend(
+                                    emitEvent(
                                         AiStreamEvent.Error(
                                             ProviderErrorKind.UNKNOWN,
                                             ProviderApiException.sanitize(msg)
@@ -210,8 +241,8 @@ class AnthropicService(
                                     )
                                 }
                             }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Skipping malformed Anthropic stream event")
+                        } catch (e: JSONException) {
+                            Log.w(TAG, "Skipping malformed Anthropic stream event", e)
                         }
                     }
                 }
@@ -220,7 +251,7 @@ class AnthropicService(
             throw e
         } catch (e: Exception) {
             failed = true
-            trySend(
+            emitEvent(
                 AiStreamEvent.Error(
                     ProviderErrorKind.NETWORK_UNAVAILABLE,
                     ProviderApiException.sanitize(e.message)
@@ -233,7 +264,7 @@ class AnthropicService(
                 val usage = if (inputTokens != null || outputTokens != null) {
                     AiStreamEvent.Usage(inputTokens, outputTokens)
                 } else null
-                trySend(AiStreamEvent.Completed(text, usage))
+                emitEvent(AiStreamEvent.Completed(text, usage))
             }
             close()
         }
@@ -243,16 +274,23 @@ class AnthropicService(
     private fun parseChatResponse(response: okhttp3.Response, userMessage: String): String? {
         val responseBody = response.body?.string()
         if (!response.isSuccessful || responseBody == null) {
-            Log.e(TAG, "API error: ${response.code}, body: $responseBody")
+            if (BuildConfig.DEBUG) {
+                Log.e(TAG, "API error: ${response.code}, body: $responseBody")
+            } else {
+                Log.e(TAG, "API error: ${response.code}")
+            }
             return null
         }
-        val json = JSONObject(responseBody)
+        val json = runCatching { JSONObject(responseBody) }.getOrElse {
+            Log.w(TAG, "Malformed Anthropic response body", it)
+            return null
+        }
         val content = json.optJSONArray("content")
         val text = content?.optJSONObject(0)?.optString("text", "")?.trim()
         if (text.isNullOrEmpty()) return null
 
         addToHistory(userMessage, text)
-        Log.d(TAG, "Claude response: $text")
+        if (BuildConfig.DEBUG) Log.d(TAG, "Claude response: $text")
         return text
     }
     
@@ -292,7 +330,9 @@ class AnthropicService(
             
             val requestJson = JSONObject().apply {
                 put("model", modelId)
-                put("max_tokens", maxTokens.coerceAtMost(4096))
+                put("max_tokens", maxTokens.coerceAtMost(MAX_VISION_TOKENS))
+                // Claude 4.x: Do NOT set both temperature and top_p simultaneously
+                put("temperature", temperature.toDouble())
                 put("system", "You are an image analysis assistant. Please provide objective descriptions based on the image content. If unable to determine, please explain.")
                 put("messages", messages)
             }
@@ -300,30 +340,24 @@ class AnthropicService(
             val result = executeWithRetry(TAG) { attempt ->
                 Log.d(TAG, "Sending image analysis request to Anthropic (attempt $attempt)")
                 
-                val requestBuilder = Request.Builder()
-                    .url("$baseUrl/messages")
-                    .addHeader("x-api-key", apiKey)
-                    .addHeader("anthropic-version", API_VERSION)
-                    .addHeader("Content-Type", "application/json")
-                
-                // Inject 1M context beta header when needed
-                if (needs1MContext) {
-                    requestBuilder.addHeader("anthropic-beta", BETA_CONTEXT_1M)
-                }
-                
-                val request = requestBuilder
-                    .post(requestJson.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
+                val request = buildAnthropicRequest("$baseUrl/messages", requestJson)
                 
                 client.newCall(request).execute().use { response ->
                     val responseBody = response.body?.string()
                     
                     if (response.isSuccessful && responseBody != null) {
-                        val json = JSONObject(responseBody)
-                        val content = json.optJSONArray("content")
+                        val json = runCatching { JSONObject(responseBody) }.getOrElse {
+                            Log.w(TAG, "Malformed Anthropic vision response body", it)
+                            null
+                        }
+                        val content = json?.optJSONArray("content")
                         content?.optJSONObject(0)?.optString("text", "")?.trim()
                     } else {
-                        Log.e(TAG, "API error: ${response.code}, body: $responseBody")
+                        if (BuildConfig.DEBUG) {
+                            Log.e(TAG, "API error: ${response.code}, body: $responseBody")
+                        } else {
+                            Log.e(TAG, "API error: ${response.code}")
+                        }
                         null
                     }
                 }

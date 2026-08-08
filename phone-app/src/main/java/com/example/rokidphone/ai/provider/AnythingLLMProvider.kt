@@ -1,6 +1,7 @@
 package com.example.rokidphone.ai.provider
 
 import com.example.rokidphone.service.ai.NetworkClientFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -9,7 +10,10 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONException
 import org.json.JSONObject
+import java.io.IOException
+import java.net.URLEncoder
 import java.util.Locale
 
 /**
@@ -59,6 +63,8 @@ class AnythingLLMProvider(
                         else -> ValidationResult.Invalid("Connection failed: HTTP ${response.code}")
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 ValidationResult.Invalid("Connection failed: ${e.message}")
             }
@@ -86,10 +92,12 @@ class AnythingLLMProvider(
                     .toString()
 
                 val request = Request.Builder()
-                    .url("${setting.serverUrl.trimEnd('/')}/api/v1/workspace/${setting.workspaceSlug}/chat")
+                    .url(
+                        "${setting.serverUrl.trimEnd('/')}/api/v1/workspace/" +
+                            URLEncoder.encode(setting.workspaceSlug, "UTF-8") + "/chat"
+                    )
                     .post(requestBody.toRequestBody(jsonMediaType))
                     .addHeader("Authorization", "Bearer ${setting.apiKey}")
-                    .addHeader("Content-Type", "application/json")
                     .build()
 
                 client.newCall(request).execute().use { response ->
@@ -98,23 +106,45 @@ class AnythingLLMProvider(
                         val json = JSONObject(responseBody)
                         val text = json.optNullableString("textResponse")
                             .ifBlank { json.optNullableString("response") }
-                        GenerationResult.Success(
-                            text = appendSources(text, json),
-                            finishReason = FinishReason.STOP
-                        )
+                        if (text.isBlank()) {
+                            GenerationResult.Error(
+                                message = "AnythingLLM returned an empty response",
+                                code = "empty_response",
+                                retryable = false
+                            )
+                        } else {
+                            GenerationResult.Success(
+                                text = appendSources(text, json),
+                                finishReason = FinishReason.STOP
+                            )
+                        }
                     } else {
                         GenerationResult.Error(
-                            message = "Request failed: HTTP ${response.code}",
+                            message = "Request failed: HTTP ${response.code} ${responseBody.take(500)}",
                             code = response.code.toString(),
                             retryable = response.code >= 500
                         )
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: JSONException) {
+                GenerationResult.Error(
+                    message = "Malformed response from AnythingLLM: ${e.message}",
+                    code = "invalid_response",
+                    retryable = false
+                )
+            } catch (e: IOException) {
                 GenerationResult.Error(
                     message = "Connection error: ${e.message}",
                     code = "connection_error",
                     retryable = true
+                )
+            } catch (e: Exception) {
+                GenerationResult.Error(
+                    message = "Unexpected error: ${e.message}",
+                    code = "unknown",
+                    retryable = false
                 )
             }
         }

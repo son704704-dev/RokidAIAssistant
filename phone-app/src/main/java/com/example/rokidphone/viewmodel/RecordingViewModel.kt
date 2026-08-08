@@ -62,7 +62,7 @@ data class RecordingsUiState(
  */
 class RecordingViewModel(application: Application) : AndroidViewModel(application) {
     
-    private val repository = RecordingRepository.getInstance(application, viewModelScope)
+    private val repository = RecordingRepository.getInstance(application)
     
     private val _uiState = MutableStateFlow(RecordingsUiState())
     val uiState: StateFlow<RecordingsUiState> = _uiState.asStateFlow()

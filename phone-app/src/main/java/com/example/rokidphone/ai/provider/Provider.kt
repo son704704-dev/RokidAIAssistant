@@ -42,23 +42,33 @@ interface Provider<T : ProviderSetting> {
     ): Flow<MessageChunk>
     
     /**
-     * Speech to text (if supported)
+     * Speech to text (if supported).
+     * Default implementation returns a well-defined unsupported error;
+     * providers that support transcription override it.
      */
     suspend fun transcribe(
         setting: T,
         audioData: ByteArray,
         options: TranscriptionOptions = TranscriptionOptions()
-    ): TranscriptionResult
-    
+    ): TranscriptionResult = TranscriptionResult.Error(
+        message = "$displayName does not support transcription",
+        code = "UNSUPPORTED"
+    )
+
     /**
-     * Image analysis (if supported)
+     * Image analysis (if supported).
+     * Default implementation returns a well-defined unsupported error;
+     * providers that support vision override it.
      */
     suspend fun analyzeImage(
         setting: T,
         imageData: ByteArray,
         prompt: String,
         options: GenerationOptions = GenerationOptions()
-    ): GenerationResult
+    ): GenerationResult = GenerationResult.Error(
+        message = "$displayName does not support image analysis",
+        code = "unsupported"
+    )
     
     /**
      * Validate if setting is valid
@@ -73,7 +83,8 @@ data class Model(
     val id: String,
     val name: String,
     val description: String = "",
-    val contextLength: Int = 0,
+    /** Maximum context window in tokens; null means unknown. */
+    val contextLength: Int? = null,
     val supportsVision: Boolean = false,
     val supportsAudio: Boolean = false,
     val supportsFunctionCalling: Boolean = false
@@ -131,7 +142,15 @@ data class GenerationOptions(
     val frequencyPenalty: Float = 0.0f,
     val presencePenalty: Float = 0.0f,
     val stopSequences: List<String> = emptyList()
-)
+) {
+    init {
+        require(temperature in 0f..2f) { "temperature must be in [0, 2], was $temperature" }
+        require(topP in 0f..1f) { "topP must be in [0, 1], was $topP" }
+        require(maxTokens > 0) { "maxTokens must be positive, was $maxTokens" }
+        require(frequencyPenalty in -2f..2f) { "frequencyPenalty must be in [-2, 2], was $frequencyPenalty" }
+        require(presencePenalty in -2f..2f) { "presencePenalty must be in [-2, 2], was $presencePenalty" }
+    }
+}
 
 /**
  * Generation Result

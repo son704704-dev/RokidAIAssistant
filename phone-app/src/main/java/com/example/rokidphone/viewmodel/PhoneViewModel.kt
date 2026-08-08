@@ -41,7 +41,7 @@ class PhoneViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<PhoneUiState> = _uiState.asStateFlow()
     
     // Recording repository
-    private val recordingRepository = RecordingRepository.getInstance(application, viewModelScope)
+    private val recordingRepository = RecordingRepository.getInstance(application)
     
     init {
         // Listen to recording state

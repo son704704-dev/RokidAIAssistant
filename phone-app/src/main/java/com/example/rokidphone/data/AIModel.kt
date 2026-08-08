@@ -13,7 +13,10 @@ enum class Provider {
  *
  * @property modelId The exact string ID used in API requests
  * @property displayName Human-readable name for UI display
- * @property contextWindow Approximate maximum context window in tokens
+ * @property contextWindow Approximate maximum context window in tokens.
+ * Sentinel values: [CONTEXT_WINDOW_UNKNOWN] (not yet published/verified) and
+ * [CONTEXT_WINDOW_NOT_APPLICABLE] (e.g. on-device or image-generation models).
+ * Callers must not feed sentinels into token-budget math.
  * @property provider The AI provider this model belongs to
  * @property isPreview Whether this model is in preview/experimental state
  * @property isDeprecated Whether this model is deprecated and should not be used
@@ -65,7 +68,7 @@ sealed class AIModel(
         data object Gemini3FlashPreview : Gemini(
             modelId = "gemini-3-flash-preview",
             displayName = "Gemini 3 Flash (Preview)",
-            contextWindow = -1L, // TBD
+            contextWindow = CONTEXT_WINDOW_UNKNOWN,
             isPreview = true
         )
 
@@ -90,7 +93,7 @@ sealed class AIModel(
         data object GeminiNano : Gemini(
             modelId = "gemini-nano",
             displayName = "Gemini Nano (On-Device)",
-            contextWindow = 0L // Device-limited
+            contextWindow = CONTEXT_WINDOW_NOT_APPLICABLE
         )
 
         companion object {
@@ -115,19 +118,21 @@ sealed class AIModel(
         displayName: String,
         contextWindow: Long,
         isPreview: Boolean = false,
-        isDeprecated: Boolean = false
+        isDeprecated: Boolean = false,
+        val supports1MContext: Boolean = false
     ) : AIModel(modelId, displayName, contextWindow, Provider.CLAUDE, isPreview, isDeprecated) {
 
         data object Opus47 : Claude(
             modelId = "claude-opus-4-7",
             displayName = "Claude Opus 4.7",
-            contextWindow = 200_000L // 1M via beta header
+            contextWindow = 200_000L, // 1M via beta header
+            supports1MContext = true
         )
 
         // TODO: Verify exact API model ID for Claude Sonnet 4.7.
         data object Sonnet47 : Claude(
             modelId = "claude-sonnet-4-7",
-            displayName = "Claude Sonnet 4.7 (TODO: verify ID)",
+            displayName = "Claude Sonnet 4.7",
             contextWindow = 200_000L,
             isPreview = true
         )
@@ -135,7 +140,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for legacy Claude Opus 4 line.
         data object Opus4 : Claude(
             modelId = "claude-opus-4",
-            displayName = "Claude Opus 4 (TODO: verify ID)",
+            displayName = "Claude Opus 4",
             contextWindow = 200_000L,
             isPreview = true
         )
@@ -143,7 +148,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for legacy Claude Sonnet 4 line.
         data object Sonnet4 : Claude(
             modelId = "claude-sonnet-4",
-            displayName = "Claude Sonnet 4 (TODO: verify ID)",
+            displayName = "Claude Sonnet 4",
             contextWindow = 200_000L,
             isPreview = true
         )
@@ -151,20 +156,22 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for Claude 3.7 Sonnet.
         data object Sonnet37 : Claude(
             modelId = "claude-3-7-sonnet-latest",
-            displayName = "Claude 3.7 Sonnet (TODO: verify ID)",
+            displayName = "Claude 3.7 Sonnet",
             contextWindow = 200_000L
         )
 
         data object Opus46 : Claude(
             modelId = "claude-opus-4-6",
             displayName = "Claude Opus 4.6",
-            contextWindow = 200_000L // 1M via beta header
+            contextWindow = 200_000L, // 1M via beta header
+            supports1MContext = true
         )
 
         data object Sonnet46 : Claude(
             modelId = "claude-sonnet-4-6",
             displayName = "Claude Sonnet 4.6",
-            contextWindow = 200_000L // 1M via beta header
+            contextWindow = 200_000L, // 1M via beta header
+            supports1MContext = true
         )
 
         data object Haiku45 : Claude(
@@ -180,9 +187,7 @@ sealed class AIModel(
              * Whether this model supports 1M context via beta header.
              */
             fun supports1MContext(modelId: String): Boolean =
-                modelId == Opus47.modelId ||
-                modelId == Opus46.modelId ||
-                modelId == Sonnet46.modelId
+                all().find { it.modelId == modelId }?.supports1MContext == true
         }
     }
 
@@ -205,7 +210,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for GPT-5.5 once GA.
         data object Gpt55 : OpenAI(
             modelId = "gpt-5.5",
-            displayName = "GPT-5.5 (TODO: verify ID)",
+            displayName = "GPT-5.5",
             contextWindow = 1_000_000L,
             isPreview = true
         )
@@ -213,7 +218,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for o3-pro.
         data object O3Pro : OpenAI(
             modelId = "o3-pro",
-            displayName = "o3 Pro (Reasoning, TODO: verify ID)",
+            displayName = "o3 Pro (Reasoning)",
             contextWindow = 200_000L,
             isPreview = true
         )
@@ -303,7 +308,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for Grok 4.3 once xAI publishes it.
         data object Grok43 : Grok(
             modelId = "grok-4.3",
-            displayName = "Grok 4.3 (TODO: verify ID)",
+            displayName = "Grok 4.3",
             contextWindow = 2_000_000L,
             isPreview = true
         )
@@ -311,7 +316,7 @@ sealed class AIModel(
         data object Grok420 : Grok(
             modelId = "grok-4.20",
             displayName = "Grok 4.20 (Early Access)",
-            contextWindow = -1L, // TBD
+            contextWindow = CONTEXT_WINDOW_UNKNOWN,
             isPreview = true
         )
 
@@ -343,7 +348,7 @@ sealed class AIModel(
         data object GrokImage : Grok(
             modelId = "grok-2-image-1212",
             displayName = "Grok Imagine (Image Gen)",
-            contextWindow = 0L // N/A — image generation
+            contextWindow = CONTEXT_WINDOW_NOT_APPLICABLE
         )
 
         companion object {
@@ -395,7 +400,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for DeepSeek V4 Pro.
         data object V4Pro : DeepSeek(
             modelId = "deepseek-v4-pro",
-            displayName = "DeepSeek V4 Pro (TODO: verify ID)",
+            displayName = "DeepSeek V4 Pro",
             contextWindow = 128_000L,
             isPreview = true
         )
@@ -403,7 +408,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for DeepSeek V4 Flash Max.
         data object V4FlashMax : DeepSeek(
             modelId = "deepseek-v4-flash-max",
-            displayName = "DeepSeek V4 Flash Max (TODO: verify ID)",
+            displayName = "DeepSeek V4 Flash Max",
             contextWindow = 128_000L,
             isPreview = true
         )
@@ -411,7 +416,7 @@ sealed class AIModel(
         // TODO: Verify whether 'deepseek-r1' is still a valid public alias.
         data object R1 : DeepSeek(
             modelId = "deepseek-r1",
-            displayName = "DeepSeek R1 (TODO: verify ID)",
+            displayName = "DeepSeek R1",
             contextWindow = 128_000L,
             isPreview = true,
             isReasoner = true
@@ -638,7 +643,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID against https://docs.mistral.ai/getting-started/models/
         data object MistralMedium35 : Mistral(
             modelId = "mistral-medium-3.5",
-            displayName = "Mistral Medium 3.5 (TODO: verify ID)",
+            displayName = "Mistral Medium 3.5",
             contextWindow = 128_000L,
             isPreview = true
         )
@@ -652,7 +657,7 @@ sealed class AIModel(
         // TODO: Verify exact API model ID for Ministral 3 (3B) edge tier.
         data object Ministral33B : Mistral(
             modelId = "ministral-3-3b",
-            displayName = "Ministral 3 3B (TODO: verify ID)",
+            displayName = "Ministral 3 3B",
             contextWindow = 32_000L,
             isPreview = true
         )
@@ -663,13 +668,23 @@ sealed class AIModel(
     }
 
     companion object {
-        /**
-         * Returns all registered models across all providers.
-         */
-        fun allModels(): List<AIModel> =
+        /** Sentinel [contextWindow]: size not yet published/verified. */
+        const val CONTEXT_WINDOW_UNKNOWN = -1L
+
+        /** Sentinel [contextWindow]: not applicable (e.g. on-device or image-generation models). */
+        const val CONTEXT_WINDOW_NOT_APPLICABLE = 0L
+
+        // Entries are immutable data objects, so the registry is built once and cached.
+        private val ALL_MODELS: List<AIModel> by lazy {
             Gemini.all() + Claude.all() + OpenAI.all() + Grok.all() +
             DeepSeek.all() + Qwen.all() + Zhipu.all() +
             Moonshot.all() + Perplexity.all() + Groq.all() + Mistral.all()
+        }
+
+        /**
+         * Returns all registered models across all providers.
+         */
+        fun allModels(): List<AIModel> = ALL_MODELS
     }
 }
 
@@ -679,11 +694,19 @@ sealed class AIModel(
  */
 object ModelRepository {
 
+    // Entries are immutable data objects; derive views once and reuse them.
+    private val nonDeprecatedModels: List<AIModel> by lazy {
+        AIModel.allModels().filter { !it.isDeprecated }
+    }
+
+    private val byModelId: Map<String, AIModel> by lazy {
+        AIModel.allModels().associateBy { it.modelId }
+    }
+
     /**
      * Returns all non-deprecated models.
      */
-    fun getAvailableModels(): List<AIModel> =
-        AIModel.allModels().filter { !it.isDeprecated }
+    fun getAvailableModels(): List<AIModel> = nonDeprecatedModels
 
     /**
      * Returns available models grouped by provider.
@@ -700,8 +723,7 @@ object ModelRepository {
     /**
      * Find a model by its exact model ID string.
      */
-    fun findByModelId(modelId: String): AIModel? =
-        AIModel.allModels().find { it.modelId == modelId }
+    fun findByModelId(modelId: String): AIModel? = byModelId[modelId]
 
     /**
      * Returns only preview models.
